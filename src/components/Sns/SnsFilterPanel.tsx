@@ -45,6 +45,7 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
     contactsCountProgress
 }) => {
     const [showJumpPopover, setShowJumpPopover] = useState(false)
+    const [jumpPopoverDate, setJumpPopoverDate] = useState<Date>(jumpTargetDate || new Date())
     const jumpCalendarWrapRef = useRef<HTMLDivElement | null>(null)
 
     useEffect(() => {
@@ -57,6 +58,11 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [showJumpPopover])
+
+    useEffect(() => {
+        if (showJumpPopover) return
+        setJumpPopoverDate(jumpTargetDate || new Date())
+    }, [jumpTargetDate, showJumpPopover])
 
     const filteredContacts = contacts.filter(c =>
         (c.displayName || '').toLowerCase().includes(contactSearch.toLowerCase()) ||
@@ -131,7 +137,12 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
                         <div className="jump-calendar-anchor" ref={jumpCalendarWrapRef}>
                             <button
                                 className={`date-picker-trigger ${jumpTargetDate ? 'active' : ''}`}
-                                onClick={() => setShowJumpPopover(prev => !prev)}
+                                onClick={() => {
+                                    if (!showJumpPopover) {
+                                        setJumpPopoverDate(jumpTargetDate || new Date())
+                                    }
+                                    setShowJumpPopover(prev => !prev)
+                                }}
                             >
                                 <span className="date-text">
                                     {jumpTargetDate
@@ -152,9 +163,12 @@ export const SnsFilterPanel: React.FC<SnsFilterPanelProps> = ({
                             </button>
                             <JumpToDatePopover
                                 isOpen={showJumpPopover}
-                                currentDate={jumpTargetDate || new Date()}
+                                currentDate={jumpPopoverDate}
                                 onClose={() => setShowJumpPopover(false)}
-                                onSelect={(date) => setJumpTargetDate(date)}
+                                onSelect={(date) => {
+                                    setJumpPopoverDate(date)
+                                    setJumpTargetDate(date)
+                                }}
                             />
                         </div>
                     </div>
