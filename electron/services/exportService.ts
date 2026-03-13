@@ -3467,9 +3467,13 @@ class ExportService {
 
         // 确定消息内容
         let content: string | null
+        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaItem = mediaCache.get(mediaKey)
         if (msg.localType === 34 && options.exportVoiceAsText) {
           // 使用预先转写的文字
           content = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
+        } else if (mediaItem && msg.localType === 3) {
+          content = mediaItem.relativePath
         } else {
           content = this.parseMessageContent(
             msg.content,
