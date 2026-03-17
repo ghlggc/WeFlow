@@ -202,6 +202,7 @@ const FRIEND_EXCLUDE_USERNAMES = new Set(['medianote', 'floatbottle', 'qmessage'
 class ChatService {
   private configService: ConfigService
   private connected = false
+  private readonly dbMonitorListeners = new Set<(type: string, json: string) => void>()
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean; bufferedMessages?: any[] }> = new Map()
   private messageCursorMutex: boolean = false
   private readonly messageBatchDefault = 50
@@ -354,6 +355,13 @@ class ChatService {
 
   private monitorSetup = false
 
+  addDbMonitorListener(listener: (type: string, json: string) => void): () => void {
+    this.dbMonitorListeners.add(listener)
+    return () => {
+      this.dbMonitorListeners.delete(listener)
+    }
+  }
+
   private setupDbMonitor() {
     if (this.monitorSetup) return
     this.monitorSetup = true
@@ -362,6 +370,13 @@ class ChatService {
     // 这种方式更高效，且不占用 JS 线程，并能直接监听 session/message 目录变更
     wcdbService.setMonitor((type, json) => {
       this.handleSessionStatsMonitorChange(type, json)
+      for (const listener of this.dbMonitorListeners) {
+        try {
+          listener(type, json)
+        } catch (error) {
+          console.error('[ChatService] 数据库监听回调失败:', error)
+        }
+      }
       const windows = BrowserWindow.getAllWindows()
       // 广播给所有渲染进程窗口
       windows.forEach((win) => {

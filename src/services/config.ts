@@ -63,6 +63,7 @@ export const CONFIG_KEYS = {
   NOTIFICATION_POSITION: 'notificationPosition',
   NOTIFICATION_FILTER_MODE: 'notificationFilterMode',
   NOTIFICATION_FILTER_LIST: 'notificationFilterList',
+  MESSAGE_PUSH_ENABLED: 'messagePushEnabled',
   WINDOW_CLOSE_BEHAVIOR: 'windowCloseBehavior',
 
   // 词云
@@ -1360,6 +1361,15 @@ export async function getNotificationFilterList(): Promise<string[]> {
 // 设置通知过滤列表
 export async function setNotificationFilterList(list: string[]): Promise<void> {
   await config.set(CONFIG_KEYS.NOTIFICATION_FILTER_LIST, list)
+}
+
+export async function getMessagePushEnabled(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.MESSAGE_PUSH_ENABLED)
+  return value === true
+}
+
+export async function setMessagePushEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.MESSAGE_PUSH_ENABLED, enabled)
 }
 
 export async function getWindowCloseBehavior(): Promise<WindowCloseBehavior> {

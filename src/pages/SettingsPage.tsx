@@ -171,6 +171,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [httpApiMediaExportPath, setHttpApiMediaExportPath] = useState('')
   const [isTogglingApi, setIsTogglingApi] = useState(false)
   const [showApiWarning, setShowApiWarning] = useState(false)
+  const [messagePushEnabled, setMessagePushEnabled] = useState(false)
 
   const isClearingCache = isClearingAnalyticsCache || isClearingImageCache || isClearingAllCache
 
@@ -296,6 +297,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedNotificationPosition = await configService.getNotificationPosition()
       const savedNotificationFilterMode = await configService.getNotificationFilterMode()
       const savedNotificationFilterList = await configService.getNotificationFilterList()
+      const savedMessagePushEnabled = await configService.getMessagePushEnabled()
       const savedWindowCloseBehavior = await configService.getWindowCloseBehavior()
 
       const savedAuthEnabled = await window.electronAPI.auth.verifyEnabled()
@@ -332,6 +334,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setNotificationPosition(savedNotificationPosition)
       setNotificationFilterMode(savedNotificationFilterMode)
       setNotificationFilterList(savedNotificationFilterList)
+      setMessagePushEnabled(savedMessagePushEnabled)
       setWindowCloseBehavior(savedWindowCloseBehavior)
 
       const savedExcludeWords = await configService.getWordCloudExcludeWords()
@@ -1746,6 +1749,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     showMessage('已复制 API 地址', true)
   }
 
+  const handleToggleMessagePush = async (enabled: boolean) => {
+    setMessagePushEnabled(enabled)
+    await configService.setMessagePushEnabled(enabled)
+    showMessage(enabled ? '已开启主动推送' : '已关闭主动推送', true)
+  }
+
   const renderApiTab = () => (
     <div className="tab-content">
       <div className="form-group">
@@ -1810,6 +1819,70 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           value={httpApiMediaExportPath || '未获取到目录'}
           readOnly
         />
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
+        <label>主动推送</label>
+        <span className="form-hint">检测到新收到的消息后，会通过当前 API 端口下的固定 SSE 地址主动推送给外部订阅端</span>
+        <div className="log-toggle-line">
+          <span className="log-status">
+            {messagePushEnabled ? '已开启' : '已关闭'}
+          </span>
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={messagePushEnabled}
+              onChange={(e) => { void handleToggleMessagePush(e.target.checked) }}
+            />
+            <span className="switch-slider" />
+          </label>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label>推送地址</label>
+        <span className="form-hint">外部软件连接这个 SSE 地址即可接收新消息推送；需要先开启上方 `HTTP API 服务`</span>
+        <div className="api-url-display">
+          <input
+            type="text"
+            className="field-input"
+            value={`http://127.0.0.1:${httpApiPort}/api/v1/push/messages`}
+            readOnly
+          />
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              navigator.clipboard.writeText(`http://127.0.0.1:${httpApiPort}/api/v1/push/messages`)
+              showMessage('已复制推送地址', true)
+            }}
+            title="复制"
+          >
+            <Copy size={16} />
+          </button>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label>推送内容</label>
+        <span className="form-hint">SSE 事件名为 `message.new`；私聊推送 `avatarUrl/sourceName/content`，群聊额外附带 `groupName`</span>
+        <div className="api-docs">
+          <div className="api-item">
+            <div className="api-endpoint">
+              <span className="method get">GET</span>
+              <code>{`http://127.0.0.1:${httpApiPort}/api/v1/push/messages`}</code>
+            </div>
+            <p className="api-desc">通过 SSE 长连接接收消息事件，建议接收端按 `messageKey` 去重。</p>
+            <div className="api-params">
+              {['event', 'sessionId', 'messageKey', 'avatarUrl', 'sourceName', 'groupName?', 'content'].map((param) => (
+                <span key={param} className="param">
+                  <code>{param}</code>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       {showApiWarning && (

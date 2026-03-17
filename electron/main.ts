@@ -17,7 +17,6 @@ import { annualReportService } from './services/annualReportService'
 import { exportService, ExportOptions, ExportProgress } from './services/exportService'
 import { KeyService } from './services/keyService'
 import { KeyServiceMac } from './services/keyServiceMac'
-import { KeyServiceLinux } from './services/keyServiceLinux';
 import { voiceTranscribeService } from './services/voiceTranscribeService'
 import { videoService } from './services/videoService'
 import { snsService, isVideoUrl } from './services/snsService'
@@ -28,6 +27,7 @@ import { cloudControlService } from './services/cloudControlService'
 
 import { destroyNotificationWindow, registerNotificationHandlers, showNotification } from './windows/notificationWindow'
 import { httpService } from './services/httpService'
+import { messagePushService } from './services/messagePushService'
 
 
 // 配置自动更新
@@ -91,13 +91,14 @@ let splashWindow: BrowserWindow | null = null
 const sessionChatWindows = new Map<string, BrowserWindow>()
 const sessionChatWindowSources = new Map<string, 'chat' | 'export'>()
 
-let keyService: KeyService | KeyServiceMac | KeyServiceLinux;
+let keyService: any
 if (process.platform === 'darwin') {
-  keyService = new KeyServiceMac();
+  keyService = new KeyServiceMac()
 } else if (process.platform === 'linux') {
-  keyService = new KeyServiceLinux();
+  const { KeyServiceLinux } = require('./services/keyServiceLinux')
+  keyService = new KeyServiceLinux()
 } else {
-  keyService = new KeyService();
+  keyService = new KeyService()
 }
 
 let mainWindowReady = false
@@ -972,11 +973,14 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
-    return configService?.set(key as any, value)
+    const result = configService?.set(key as any, value)
+    void messagePushService.handleConfigChanged(key)
+    return result
   })
 
   ipcMain.handle('config:clear', async () => {
     configService?.clear()
+    messagePushService.handleConfigCleared()
     return true
   })
 
@@ -2515,6 +2519,10 @@ app.whenReady().then(async () => {
   // 注册 IPC 处理器
   updateSplashProgress(25, '正在初始化...')
   registerIpcHandlers()
+  chatService.addDbMonitorListener((type, json) => {
+    messagePushService.handleDbMonitorChange(type, json)
+  })
+  messagePushService.start()
   await delay(200)
 
   // 检查配置状态
