@@ -585,6 +585,263 @@ interface GroupPanelMember {
   messageCountStatus: GroupMessageCountStatus
 }
 
+const QUOTED_SENDER_CACHE_TTL_MS = 10 * 60 * 1000
+const quotedSenderDisplayCache = new Map<string, { displayName: string; updatedAt: number }>()
+const quotedSenderDisplayLoading = new Map<string, Promise<string | undefined>>()
+const quotedGroupMembersCache = new Map<string, { members: GroupPanelMember[]; updatedAt: number }>()
+const quotedGroupMembersLoading = new Map<string, Promise<GroupPanelMember[]>>()
+
+function buildQuotedSenderCacheKey(
+  sessionId: string,
+  senderUsername: string,
+  isGroupChat: boolean
+): string {
+  const normalizedSessionId = normalizeSearchIdentityText(sessionId) || String(sessionId || '').trim()
+  const normalizedSender = normalizeSearchIdentityText(senderUsername) || String(senderUsername || '').trim()
+  return `${isGroupChat ? 'group' : 'direct'}::${normalizedSessionId}::${normalizedSender}`
+}
+
+function isSameQuotedSenderIdentity(left?: string | null, right?: string | null): boolean {
+  const leftCandidates = buildSearchIdentityCandidates(left)
+  const rightCandidates = buildSearchIdentityCandidates(right)
+  if (leftCandidates.length === 0 || rightCandidates.length === 0) {
+    return false
+  }
+
+  for (const leftCandidate of leftCandidates) {
+    for (const rightCandidate of rightCandidates) {
+      if (leftCandidate === rightCandidate) return true
+      if (leftCandidate.startsWith(rightCandidate + '_')) return true
+      if (rightCandidate.startsWith(leftCandidate + '_')) return true
+    }
+  }
+
+  return false
+}
+
+function normalizeQuotedGroupMember(member: Partial<GroupPanelMember> | null | undefined): GroupPanelMember | null {
+  const username = String(member?.username || '').trim()
+  if (!username) return null
+
+  const displayName = String(member?.displayName || '').trim()
+  const nickname = String(member?.nickname || '').trim()
+  const remark = String(member?.remark || '').trim()
+  const alias = String(member?.alias || '').trim()
+  const groupNickname = String(member?.groupNickname || '').trim()
+
+  return {
+    username,
+    displayName: displayName || groupNickname || remark || nickname || alias || username,
+    avatarUrl: member?.avatarUrl,
+    nickname,
+    alias,
+    remark,
+    groupNickname,
+    isOwner: Boolean(member?.isOwner),
+    isFriend: Boolean(member?.isFriend),
+    messageCount: Number.isFinite(member?.messageCount) ? Math.max(0, Math.floor(member?.messageCount as number)) : 0,
+    messageCountStatus: 'ready'
+  }
+}
+
+function resolveQuotedSenderFallbackDisplayName(
+  sessionId: string,
+  senderUsername?: string | null,
+  fallbackDisplayName?: string | null
+): string | undefined {
+  const resolved = resolveSearchSenderDisplayName(fallbackDisplayName, senderUsername, sessionId)
+  if (resolved) return resolved
+  return resolveSearchSenderUsernameFallback(senderUsername)
+}
+
+function resolveQuotedSenderUsername(
+  fromusr?: string | null,
+  chatusr?: string | null
+): string {
+  const normalizedChatUsr = String(chatusr || '').trim()
+  const normalizedFromUsr = String(fromusr || '').trim()
+
+  if (normalizedChatUsr) {
+    return normalizedChatUsr
+  }
+
+  if (normalizedFromUsr.endsWith('@chatroom')) {
+    return ''
+  }
+
+  return normalizedFromUsr
+}
+
+function resolveQuotedGroupMemberDisplayName(member: GroupPanelMember): string | undefined {
+  const remark = normalizeSearchIdentityText(member.remark)
+  if (remark) return remark
+
+  const groupNickname = normalizeSearchIdentityText(member.groupNickname)
+  if (groupNickname) return groupNickname
+
+  const nickname = normalizeSearchIdentityText(member.nickname)
+  if (nickname) return nickname
+
+  const displayName = resolveSearchSenderDisplayName(member.displayName, member.username)
+  if (displayName) return displayName
+
+  const alias = normalizeSearchIdentityText(member.alias)
+  if (alias) return alias
+
+  return resolveSearchSenderUsernameFallback(member.username)
+}
+
+function resolveQuotedPrivateDisplayName(contact: any): string | undefined {
+  const remark = normalizeSearchIdentityText(contact?.remark)
+  if (remark) return remark
+
+  const nickname = normalizeSearchIdentityText(
+    contact?.nickName || contact?.nick_name || contact?.nickname
+  )
+  if (nickname) return nickname
+
+  const alias = normalizeSearchIdentityText(contact?.alias)
+  if (alias) return alias
+
+  return undefined
+}
+
+async function getQuotedGroupMembers(chatroomId: string): Promise<GroupPanelMember[]> {
+  const normalizedChatroomId = String(chatroomId || '').trim()
+  if (!normalizedChatroomId || !normalizedChatroomId.includes('@chatroom')) {
+    return []
+  }
+
+  const cached = quotedGroupMembersCache.get(normalizedChatroomId)
+  if (cached && Date.now() - cached.updatedAt < QUOTED_SENDER_CACHE_TTL_MS) {
+    return cached.members
+  }
+
+  const pending = quotedGroupMembersLoading.get(normalizedChatroomId)
+  if (pending) return pending
+
+  const request = window.electronAPI.groupAnalytics.getGroupMembersPanelData(
+    normalizedChatroomId,
+    { forceRefresh: false, includeMessageCounts: false }
+  ).then((result) => {
+    const members = Array.isArray(result.data)
+      ? result.data
+        .map((member) => normalizeQuotedGroupMember(member as Partial<GroupPanelMember>))
+        .filter((member): member is GroupPanelMember => Boolean(member))
+      : []
+
+    if (members.length > 0) {
+      quotedGroupMembersCache.set(normalizedChatroomId, {
+        members,
+        updatedAt: Date.now()
+      })
+      return members
+    }
+
+    return cached?.members || []
+  }).catch(() => cached?.members || []).finally(() => {
+    quotedGroupMembersLoading.delete(normalizedChatroomId)
+  })
+
+  quotedGroupMembersLoading.set(normalizedChatroomId, request)
+  return request
+}
+
+async function resolveQuotedSenderDisplayName(options: {
+  sessionId: string
+  senderUsername?: string | null
+  fallbackDisplayName?: string | null
+  isGroupChat?: boolean
+  myWxid?: string | null
+}): Promise<string | undefined> {
+  const normalizedSessionId = String(options.sessionId || '').trim()
+  const normalizedSender = String(options.senderUsername || '').trim()
+  const fallbackDisplayName = resolveQuotedSenderFallbackDisplayName(
+    normalizedSessionId,
+    normalizedSender,
+    options.fallbackDisplayName
+  )
+
+  if (!normalizedSender) {
+    return fallbackDisplayName
+  }
+
+  const cacheKey = buildQuotedSenderCacheKey(normalizedSessionId, normalizedSender, Boolean(options.isGroupChat))
+  const cached = quotedSenderDisplayCache.get(cacheKey)
+  if (cached && Date.now() - cached.updatedAt < QUOTED_SENDER_CACHE_TTL_MS) {
+    return cached.displayName
+  }
+
+  const pending = quotedSenderDisplayLoading.get(cacheKey)
+  if (pending) return pending
+
+  const request = (async (): Promise<string | undefined> => {
+    if (options.isGroupChat) {
+      const members = await getQuotedGroupMembers(normalizedSessionId)
+      const matchedMember = members.find((member) => isSameQuotedSenderIdentity(member.username, normalizedSender))
+      const groupDisplayName = matchedMember ? resolveQuotedGroupMemberDisplayName(matchedMember) : undefined
+      if (groupDisplayName) {
+        quotedSenderDisplayCache.set(cacheKey, {
+          displayName: groupDisplayName,
+          updatedAt: Date.now()
+        })
+        return groupDisplayName
+      }
+    }
+
+    if (isCurrentUserSearchIdentity(normalizedSender, options.myWxid)) {
+      const selfDisplayName = fallbackDisplayName || '我'
+      quotedSenderDisplayCache.set(cacheKey, {
+        displayName: selfDisplayName,
+        updatedAt: Date.now()
+      })
+      return selfDisplayName
+    }
+
+    try {
+      const contact = await window.electronAPI.chat.getContact(normalizedSender)
+      const contactDisplayName = resolveQuotedPrivateDisplayName(contact)
+      if (contactDisplayName) {
+        quotedSenderDisplayCache.set(cacheKey, {
+          displayName: contactDisplayName,
+          updatedAt: Date.now()
+        })
+        return contactDisplayName
+      }
+    } catch {
+      // ignore contact lookup failures and fall back below
+    }
+
+    try {
+      const profile = await window.electronAPI.chat.getContactAvatar(normalizedSender)
+      const profileDisplayName = normalizeSearchIdentityText(profile?.displayName)
+      if (profileDisplayName && !isWxidLikeSearchIdentity(profileDisplayName)) {
+        quotedSenderDisplayCache.set(cacheKey, {
+          displayName: profileDisplayName,
+          updatedAt: Date.now()
+        })
+        return profileDisplayName
+      }
+    } catch {
+      // ignore avatar lookup failures and keep fallback usable
+    }
+
+    if (fallbackDisplayName) {
+      quotedSenderDisplayCache.set(cacheKey, {
+        displayName: fallbackDisplayName,
+        updatedAt: Date.now()
+      })
+    }
+
+    return fallbackDisplayName
+  })().finally(() => {
+    quotedSenderDisplayLoading.delete(cacheKey)
+  })
+
+  quotedSenderDisplayLoading.set(cacheKey, request)
+  return request
+}
+
 interface SessionListCachePayload {
   updatedAt: number
   sessions: ChatSession[]
@@ -2394,6 +2651,10 @@ function ChatPage(props: ChatPageProps) {
   const handleAccountChanged = useCallback(async () => {
     senderAvatarCache.clear()
     senderAvatarLoading.clear()
+    quotedSenderDisplayCache.clear()
+    quotedSenderDisplayLoading.clear()
+    quotedGroupMembersCache.clear()
+    quotedGroupMembersLoading.clear()
     sessionContactProfileCacheRef.current.clear()
     pendingSessionContactEnrichRef.current.clear()
     sessionContactEnrichAttemptAtRef.current.clear()
@@ -5660,6 +5921,7 @@ function ChatPage(props: ChatPageProps) {
           session={currentSession!}
           showTime={!showDateDivider && showTime}
           myAvatarUrl={myAvatarUrl}
+          myWxid={myWxid}
           isGroupChat={isCurrentSessionGroup}
           autoTranscribeVoiceEnabled={autoTranscribeVoiceEnabled}
           onRequireModelDownload={handleRequireModelDownload}
@@ -5678,6 +5940,7 @@ function ChatPage(props: ChatPageProps) {
     formatDateDivider,
     currentSession,
     myAvatarUrl,
+    myWxid,
     isCurrentSessionGroup,
     autoTranscribeVoiceEnabled,
     handleRequireModelDownload,
@@ -7258,6 +7521,7 @@ function MessageBubble({
   session,
   showTime,
   myAvatarUrl,
+  myWxid,
   isGroupChat,
   autoTranscribeVoiceEnabled,
   onRequireModelDownload,
@@ -7271,6 +7535,7 @@ function MessageBubble({
   session: ChatSession;
   showTime?: boolean;
   myAvatarUrl?: string;
+  myWxid?: string;
   isGroupChat?: boolean;
   autoTranscribeVoiceEnabled?: boolean;
   onRequireModelDownload?: (sessionId: string, messageId: string) => void;
@@ -7290,6 +7555,7 @@ function MessageBubble({
   const isSent = message.isSend === 1
   const [senderAvatarUrl, setSenderAvatarUrl] = useState<string | undefined>(undefined)
   const [senderName, setSenderName] = useState<string | undefined>(undefined)
+  const [quotedSenderName, setQuotedSenderName] = useState<string | undefined>(undefined)
   const senderProfileRequestSeqRef = useRef(0)
   const [emojiError, setEmojiError] = useState(false)
   const [emojiLoading, setEmojiLoading] = useState(false)
@@ -8214,6 +8480,53 @@ function MessageBubble({
     appMsgTextCache.set(selector, value)
     return value
   }, [appMsgDoc, appMsgTextCache])
+  const quotedSenderUsername = resolveQuotedSenderUsername(
+    queryAppMsgText('refermsg > fromusr'),
+    queryAppMsgText('refermsg > chatusr')
+  )
+  const quotedContent = message.quotedContent || queryAppMsgText('refermsg > content') || ''
+  const quotedSenderFallbackName = useMemo(
+    () => resolveQuotedSenderFallbackDisplayName(
+      session.username,
+      quotedSenderUsername,
+      message.quotedSender || queryAppMsgText('refermsg > displayname') || ''
+    ),
+    [message.quotedSender, queryAppMsgText, quotedSenderUsername, session.username]
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    const nextFallbackName = quotedSenderFallbackName || undefined
+    setQuotedSenderName(nextFallbackName)
+
+    if (!quotedContent || !quotedSenderUsername) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    void resolveQuotedSenderDisplayName({
+      sessionId: session.username,
+      senderUsername: quotedSenderUsername,
+      fallbackDisplayName: nextFallbackName,
+      isGroupChat,
+      myWxid
+    }).then((resolvedName) => {
+      if (cancelled) return
+      setQuotedSenderName(resolvedName || nextFallbackName)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    quotedContent,
+    quotedSenderFallbackName,
+    quotedSenderUsername,
+    session.username,
+    isGroupChat,
+    myWxid
+  ])
 
   const locationMessageMeta = useMemo(() => {
     if (message.localType !== 48) return null
@@ -8248,7 +8561,8 @@ function MessageBubble({
     : (isGroupChat ? resolvedSenderAvatarUrl : session.avatarUrl)
 
   // 是否有引用消息
-  const hasQuote = message.quotedContent && message.quotedContent.length > 0
+  const hasQuote = quotedContent.length > 0
+  const displayQuotedSenderName = quotedSenderName || quotedSenderFallbackName
 
   const handlePlayVideo = useCallback(async () => {
     if (!videoInfo?.videoUrl) return
@@ -8659,7 +8973,6 @@ function MessageBubble({
       if (xmlType === '57') {
         const replyText = q('title') || cleanedParsedContent || ''
         const referContent = q('refermsg > content') || ''
-        const referSender = q('refermsg > displayname') || ''
         const referType = q('refermsg > type') || ''
 
         // 根据被引用消息类型渲染对应内容
@@ -8691,7 +9004,7 @@ function MessageBubble({
         return (
           <div className="bubble-content">
             <div className="quoted-message">
-              {referSender && <span className="quoted-sender">{referSender}</span>}
+              {displayQuotedSenderName && <span className="quoted-sender">{displayQuotedSenderName}</span>}
               <span className="quoted-text">{renderReferContent()}</span>
             </div>
             <div className="message-text">{renderTextWithEmoji(cleanMessageContent(replyText))}</div>
@@ -8787,11 +9100,10 @@ function MessageBubble({
         // 引用回复消息（appMsgKind='quote'，xmlType=57）
         const replyText = message.linkTitle || q('title') || cleanedParsedContent || ''
         const referContent = message.quotedContent || q('refermsg > content') || ''
-        const referSender = message.quotedSender || q('refermsg > displayname') || ''
         return (
           <div className="bubble-content">
             <div className="quoted-message">
-              {referSender && <span className="quoted-sender">{referSender}</span>}
+              {displayQuotedSenderName && <span className="quoted-sender">{displayQuotedSenderName}</span>}
               <span className="quoted-text">{renderTextWithEmoji(cleanMessageContent(referContent))}</span>
             </div>
             <div className="message-text">{renderTextWithEmoji(cleanMessageContent(replyText))}</div>
@@ -8982,7 +9294,6 @@ function MessageBubble({
       if (appMsgType === '57') {
         const replyText = parsedDoc?.querySelector('title')?.textContent?.trim() || cleanedParsedContent || ''
         const referContent = parsedDoc?.querySelector('refermsg > content')?.textContent?.trim() || ''
-        const referSender = parsedDoc?.querySelector('refermsg > displayname')?.textContent?.trim() || ''
         const referType = parsedDoc?.querySelector('refermsg > type')?.textContent?.trim() || ''
 
         const renderReferContent2 = () => {
@@ -9008,7 +9319,7 @@ function MessageBubble({
         return (
           <div className="bubble-content">
             <div className="quoted-message">
-              {referSender && <span className="quoted-sender">{referSender}</span>}
+              {displayQuotedSenderName && <span className="quoted-sender">{displayQuotedSenderName}</span>}
               <span className="quoted-text">{renderReferContent2()}</span>
             </div>
             <div className="message-text">{renderTextWithEmoji(cleanMessageContent(replyText))}</div>
@@ -9294,8 +9605,8 @@ function MessageBubble({
       return (
         <div className="bubble-content">
           <div className="quoted-message">
-            {message.quotedSender && <span className="quoted-sender">{message.quotedSender}</span>}
-            <span className="quoted-text">{renderTextWithEmoji(cleanMessageContent(message.quotedContent || ''))}</span>
+            {displayQuotedSenderName && <span className="quoted-sender">{displayQuotedSenderName}</span>}
+            <span className="quoted-text">{renderTextWithEmoji(cleanMessageContent(quotedContent))}</span>
           </div>
           <div className="message-text">{renderTextWithEmoji(cleanedParsedContent)}</div>
         </div>
@@ -9398,6 +9709,7 @@ const MemoMessageBubble = React.memo(MessageBubble, (prevProps, nextProps) => {
   if (prevProps.messageKey !== nextProps.messageKey) return false
   if (prevProps.showTime !== nextProps.showTime) return false
   if (prevProps.myAvatarUrl !== nextProps.myAvatarUrl) return false
+  if (prevProps.myWxid !== nextProps.myWxid) return false
   if (prevProps.isGroupChat !== nextProps.isGroupChat) return false
   if (prevProps.autoTranscribeVoiceEnabled !== nextProps.autoTranscribeVoiceEnabled) return false
   if (prevProps.isSelectionMode !== nextProps.isSelectionMode) return false
