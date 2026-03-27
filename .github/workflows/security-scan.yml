@@ -5,6 +5,11 @@ on:
     - cron: '0 2 * * *'  # 每天 UTC 02:00（北京时间 10:00）
   workflow_dispatch:     # 支持手动触发
 
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 jobs:
   security-scan:
     name: Security Scan (${{ matrix.branch }})
