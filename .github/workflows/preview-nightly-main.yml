@@ -1,4 +1,4 @@
-name: Preview Nightly (Main)
+name: Preview Nightly
 
 on:
   schedule:
@@ -51,7 +51,7 @@ jobs:
 
           BASE_VERSION="$(node -p "require('./package.json').version.split('-')[0]")"
           YEAR_2="$(TZ=Asia/Shanghai date +%y)"
-          EXISTING_COUNT="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq "[.[].tag_name | select(test(\"^v${BASE_VERSION}-preview\\.${YEAR_2}\\.[0-9]+$\"))] | length")"
+          EXISTING_COUNT="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq "[.[].tag_name | select(test(\"^v${BASE_VERSION}-preview[.]${YEAR_2}[.][0-9]+$\"))] | length")"
           NEXT_COUNT=$((EXISTING_COUNT + 1))
           PREVIEW_VERSION="${BASE_VERSION}-preview.${YEAR_2}.${NEXT_COUNT}"
 

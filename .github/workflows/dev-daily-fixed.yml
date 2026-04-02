@@ -1,4 +1,4 @@
-name: Dev Daily (Fixed Release)
+name: Dev Daily
 
 on:
   schedule:
