@@ -259,7 +259,7 @@ class InsightService {
   }
 
   /**
-   * 测试 API 连接，返回 { success, message }。
+   * 测��� API 连接，返回 { success, message }。
    * 供设置页"测试连接"按钮调用。
    */
   async testConnection(): Promise<{ success: boolean; message: string }> {
@@ -612,10 +612,6 @@ class InsightService {
         }
       } catch (e) {
         insightLog('WARN', `拉取上下文失败: ${(e as Error).message}`)
-      }
-    }
-      } catch (e) {
-        console.warn('[InsightService] 拉取上下文失败:', e)
       }
     }
 
