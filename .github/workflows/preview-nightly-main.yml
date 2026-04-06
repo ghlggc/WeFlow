@@ -371,7 +371,9 @@ jobs:
           > 如某个平台链接暂未生成，请前往[发布页]($RELEASE_PAGE)查看最新资源
           EOF
 
-          gh release edit "$TAG" --repo "$REPO" --title "Preview Nightly Build" --notes-file preview_release_notes.md --prerelease
           RELEASE_REST_ID="$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')"
-          gh api --method PATCH "repos/$REPO/releases/$RELEASE_REST_ID" -f draft=false -f prerelease=true >/dev/null
+          jq -n --rawfile body preview_release_notes.md \
+            '{name:"Preview Nightly Build", body:$body, draft:false, prerelease:true}' \
+            > release_update_payload.json
+          gh api --method PATCH "repos/$REPO/releases/$RELEASE_REST_ID" --input release_update_payload.json >/dev/null
           gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,url
