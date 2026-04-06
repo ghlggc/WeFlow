@@ -78,8 +78,7 @@
     "publish": {
       "provider": "github",
       "owner": "Jasonzhu1207",
-      "repo": "WeFlow",
-      "releaseType": "release"
+      "repo": "WeFlow"
     },
     "productName": "WeFlow",
     "artifactName": "${productName}-${version}-Setup.${ext}",
