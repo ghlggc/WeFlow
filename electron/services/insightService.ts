@@ -65,13 +65,13 @@ function insightLog(level: 'INFO' | 'WARN' | 'ERROR', message: string): void {
     console.log(`[InsightService] ${message}`)
   }
 
-  // 写入桌面日志文件
+  // 异步写入桌面日志文件，避免同步磁盘 I/O 阻塞 Electron 主线程事件循环
   try {
     const desktopPath = app.getPath('desktop')
     const logFile = path.join(desktopPath, `weflow-insight-${dateStr}.log`)
-    fs.appendFileSync(logFile, line, 'utf-8')
+    fs.appendFile(logFile, line, 'utf-8', () => { /* 失败静默处理 */ })
   } catch {
-    // 写文件失败静默处理，不影响主流程
+    // getPath 失败时静默处理
   }
 }
 
@@ -372,10 +372,12 @@ class InsightService {
 
   /**
    * 获取会话列表，优先使用缓存（5 分钟 TTL）。
-   * 缓存命中时不访问 DB，显著减少对主线程的占用。
+   * 缓存命中时完全跳过数据库访问，避免频繁 connect() + getSessions() 消耗 CPU。
+   * forceRefresh=true 时强制重新拉取（仅用于沉默扫描等低频场景）。
    */
   private async getSessionsCached(forceRefresh = false): Promise<ChatSession[]> {
     const now = Date.now()
+    // 缓存命中：直接返回，零数据库操作
     if (
       !forceRefresh &&
       this.sessionCache !== null &&
@@ -383,12 +385,20 @@ class InsightService {
     ) {
       return this.sessionCache
     }
-    const connectResult = await chatService.connect()
-    if (!connectResult.success) return this.sessionCache ?? []
-    const result = await chatService.getSessions()
-    if (result.success && result.sessions) {
-      this.sessionCache = result.sessions as ChatSession[]
-      this.sessionCacheAt = now
+    // 缓存未命中或强制刷新：连接数据库并拉取
+    try {
+      const connectResult = await chatService.connect()
+      if (!connectResult.success) {
+        insightLog('WARN', '数据库连接失败，使用旧缓存')
+        return this.sessionCache ?? []
+      }
+      const result = await chatService.getSessions()
+      if (result.success && result.sessions) {
+        this.sessionCache = result.sessions as ChatSession[]
+        this.sessionCacheAt = now
+      }
+    } catch (e) {
+      insightLog('WARN', `获取会话缓存失败: ${(e as Error).message}`)
     }
     return this.sessionCache ?? []
   }
