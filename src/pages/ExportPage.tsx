@@ -6601,19 +6601,15 @@ function ExportPage() {
   const taskQueuedCount = tasks.filter(task => task.status === 'queued').length
   const taskCenterAlertCount = taskRunningCount + taskQueuedCount
   const hasFilteredContacts = filteredContacts.length > 0
-  const CONTACTS_ACTION_STICKY_WIDTH = 184
-  const contactsTableMinWidth = useMemo(() => {
-    const baseWidth = 24 + 34 + 44 + 280 + 120 + (4 * 72) + CONTACTS_ACTION_STICKY_WIDTH + (8 * 12)
-    const snsWidth = shouldShowSnsColumn ? 72 + 12 : 0
-    const mutualFriendsWidth = shouldShowMutualFriendsColumn ? 72 + 12 : 0
-    return baseWidth + snsWidth + mutualFriendsWidth
-  }, [shouldShowMutualFriendsColumn, shouldShowSnsColumn])
+  const optionalMetricColumnCount = (shouldShowSnsColumn ? 1 : 0) + (shouldShowMutualFriendsColumn ? 1 : 0)
+  const contactsMetricColumnCount = 4 + optionalMetricColumnCount
+  const contactsColumnGapCount = 6 + optionalMetricColumnCount
   const contactsTableStyle = useMemo(() => (
     {
-      ['--contacts-table-min-width' as const]: `${contactsTableMinWidth}px`
+      ['--contacts-table-min-width' as const]: `calc((2 * var(--contacts-inline-padding)) + var(--contacts-left-sticky-width) + var(--contacts-message-col-width) + (${contactsMetricColumnCount} * var(--contacts-media-col-width)) + var(--contacts-actions-sticky-width) + (${contactsColumnGapCount} * var(--contacts-column-gap)))`
     } as CSSProperties
-  ), [contactsTableMinWidth])
-  const hasContactsHorizontalOverflow = contactsHorizontalScrollMetrics.contentWidth - contactsHorizontalScrollMetrics.viewportWidth > 1
+  ), [contactsColumnGapCount, contactsMetricColumnCount])
+  const hasContactsHorizontalOverflow = contactsHorizontalScrollMetrics.contentWidth - contactsHorizontalScrollMetrics.viewportWidth > 4
   const contactsBottomScrollbarInnerStyle = useMemo<CSSProperties>(() => ({
     width: `${Math.max(contactsHorizontalScrollMetrics.contentWidth, contactsHorizontalScrollMetrics.viewportWidth)}px`
   }), [contactsHorizontalScrollMetrics.contentWidth, contactsHorizontalScrollMetrics.viewportWidth])
@@ -8272,6 +8268,8 @@ function ExportPage() {
                 </div>
               )}
 
+
+
               <div className="dialog-section">
                 <div className="section-header-action">
                   <h4>时间范围</h4>
@@ -8411,27 +8409,51 @@ function ExportPage() {
                 </div>
               )}
 
-              {shouldShowDisplayNameSection && (
+              {(shouldShowDisplayNameSection || options.format === 'excel') && (
                 <div className="dialog-section">
-                  <h4>发送者名称显示</h4>
-                  <div className="display-name-options" role="radiogroup" aria-label="发送者名称显示">
-                    {displayNameOptions.map(option => {
-                      const isActive = options.displayNamePreference === option.value
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          role="radio"
-                          aria-checked={isActive}
-                          className={`display-name-item ${isActive ? 'active' : ''}`}
-                          onClick={() => setOptions(prev => ({ ...prev, displayNamePreference: option.value }))}
-                        >
-                          <span>{option.label}</span>
-                          <small>{option.desc}</small>
-                        </button>
-                      )
-                    })}
-                  </div>
+                  {shouldShowDisplayNameSection && (
+                    <>
+                      <h4>发送者名称显示</h4>
+                      <div className="display-name-options" role="radiogroup" aria-label="发送者名称显示">
+                        {displayNameOptions.map(option => {
+                          const isActive = options.displayNamePreference === option.value
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              role="radio"
+                              aria-checked={isActive}
+                              className={`display-name-item ${isActive ? 'active' : ''}`}
+                              onClick={() => setOptions(prev => ({ ...prev, displayNamePreference: option.value }))}
+                            >
+                              <span>{option.label}</span>
+                              <small>{option.desc}</small>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {options.format === 'excel' && (
+                    <div className={`dialog-switch-row ${shouldShowDisplayNameSection ? 'nested-row' : ''}`} style={shouldShowDisplayNameSection ? { marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-light)' } : {}}>
+                      <div className="dialog-switch-copy">
+                        <h4>导出完整列</h4>
+                        <div className="format-note">
+                          开启后会在 Excel 表格中拆分出「发送者昵称」、「微信ID」、「备注」等列；群聊会额外包含「群昵称」列，私聊不会显示这一列。关闭则只保留紧凑的「发送者身份」。
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`dialog-switch ${!options.excelCompactColumns ? 'on' : ''}`}
+                        aria-pressed={!options.excelCompactColumns}
+                        aria-label="切换导出完整列"
+                        onClick={() => setOptions(prev => ({ ...prev, excelCompactColumns: !prev.excelCompactColumns }))}
+                      >
+                        <span className="dialog-switch-thumb" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
