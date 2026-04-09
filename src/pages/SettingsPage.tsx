@@ -238,23 +238,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiInsightTelegramToken, setAiInsightTelegramToken] = useState('')
   const [aiInsightTelegramChatIds, setAiInsightTelegramChatIds] = useState('')
 
-  const [isWayland, setIsWayland] = useState(false)
-  useEffect(() => {
-    const checkWaylandStatus = async () => {
-      if (window.electronAPI?.app?.checkWayland) {
-        try {
-          const wayland = await window.electronAPI.app.checkWayland()
-          setIsWayland(wayland)
-        } catch (e) {
-          console.error('检查 Wayland 状态失败:', e)
-        }
-      }
-    }
-    checkWaylandStatus()
-  }, [])
-
-
-
   // 检查 Hello 可用性
   useEffect(() => {
     setHelloAvailable(isWindows)
@@ -1696,11 +1679,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <div className="form-group">
           <label>通知显示位置</label>
           <span className="form-hint">选择通知弹窗在屏幕上的显示位置</span>
-          {isWayland && (
-              <span className="form-hint" style={{ color: '#ff4d4f', marginTop: '4px', display: 'block' }}>
-              ⚠️ 注意：Wayland 环境下该配置可能无效！
-            </span>
-          )}
           <div className="custom-select">
             <div
               className={`custom-select-trigger ${positionDropdownOpen ? 'open' : ''}`}

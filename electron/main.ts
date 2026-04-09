@@ -1693,13 +1693,6 @@ function registerIpcHandlers() {
     return applyLaunchAtStartupPreference(enabled === true)
   })
 
-  ipcMain.handle('app:checkWayland', async () => {
-    if (process.platform !== 'linux') return false;
-
-    const sessionType = process.env.XDG_SESSION_TYPE?.toLowerCase();
-    return Boolean(process.env.WAYLAND_DISPLAY || sessionType === 'wayland');
-  })
-
   ipcMain.handle('log:getPath', async () => {
     return join(app.getPath('userData'), 'logs', 'wcdb.log')
   })
