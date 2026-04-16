@@ -77,6 +77,7 @@ interface ConfigSchema {
   aiModelApiBaseUrl: string
   aiModelApiKey: string
   aiModelApiModel: string
+  aiModelApiMaxTokens: number
   aiInsightEnabled: boolean
   aiInsightApiBaseUrl: string
   aiInsightApiKey: string
@@ -194,6 +195,7 @@ export class ConfigService {
       aiModelApiBaseUrl: '',
       aiModelApiKey: '',
       aiModelApiModel: 'gpt-4o-mini',
+      aiModelApiMaxTokens: 200,
       aiInsightEnabled: false,
       aiInsightApiBaseUrl: '',
       aiInsightApiKey: '',

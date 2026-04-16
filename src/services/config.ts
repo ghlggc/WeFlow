@@ -90,6 +90,7 @@ export const CONFIG_KEYS = {
   AI_MODEL_API_BASE_URL: 'aiModelApiBaseUrl',
   AI_MODEL_API_KEY: 'aiModelApiKey',
   AI_MODEL_API_MODEL: 'aiModelApiModel',
+  AI_MODEL_API_MAX_TOKENS: 'aiModelApiMaxTokens',
   AI_INSIGHT_ENABLED: 'aiInsightEnabled',
   AI_INSIGHT_API_BASE_URL: 'aiInsightApiBaseUrl',
   AI_INSIGHT_API_KEY: 'aiInsightApiKey',
@@ -1843,6 +1844,21 @@ export async function getAiModelApiModel(): Promise<string> {
 
 export async function setAiModelApiModel(model: string): Promise<void> {
   await config.set(CONFIG_KEYS.AI_MODEL_API_MODEL, model)
+}
+
+export async function getAiModelApiMaxTokens(): Promise<number> {
+  const value = await config.get(CONFIG_KEYS.AI_MODEL_API_MAX_TOKENS)
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value)
+  }
+  return 200
+}
+
+export async function setAiModelApiMaxTokens(maxTokens: number): Promise<void> {
+  const normalized = Number.isFinite(maxTokens)
+    ? Math.min(65535, Math.max(1, Math.floor(maxTokens)))
+    : 200
+  await config.set(CONFIG_KEYS.AI_MODEL_API_MAX_TOKENS, normalized)
 }
 
 export async function getAiInsightEnabled(): Promise<boolean> {

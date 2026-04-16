@@ -267,6 +267,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiModelApiBaseUrl, setAiModelApiBaseUrl] = useState('')
   const [aiModelApiKey, setAiModelApiKey] = useState('')
   const [aiModelApiModel, setAiModelApiModel] = useState('gpt-4o-mini')
+  const [aiModelApiMaxTokens, setAiModelApiMaxTokens] = useState(200)
   const [aiInsightSilenceDays, setAiInsightSilenceDays] = useState(3)
   const [aiInsightAllowContext, setAiInsightAllowContext] = useState(false)
   const [isTestingInsight, setIsTestingInsight] = useState(false)
@@ -527,6 +528,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedAiModelApiBaseUrl = await configService.getAiModelApiBaseUrl()
       const savedAiModelApiKey = await configService.getAiModelApiKey()
       const savedAiModelApiModel = await configService.getAiModelApiModel()
+      const savedAiModelApiMaxTokens = await configService.getAiModelApiMaxTokens()
       const savedAiInsightSilenceDays = await configService.getAiInsightSilenceDays()
       const savedAiInsightAllowContext = await configService.getAiInsightAllowContext()
       const savedAiInsightWhitelistEnabled = await configService.getAiInsightWhitelistEnabled()
@@ -550,6 +552,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setAiModelApiBaseUrl(savedAiModelApiBaseUrl)
       setAiModelApiKey(savedAiModelApiKey)
       setAiModelApiModel(savedAiModelApiModel)
+      setAiModelApiMaxTokens(savedAiModelApiMaxTokens)
       setAiInsightSilenceDays(savedAiInsightSilenceDays)
       setAiInsightAllowContext(savedAiInsightAllowContext)
       setAiInsightWhitelistEnabled(savedAiInsightWhitelistEnabled)
@@ -2836,6 +2839,28 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             const val = e.target.value.trim() || 'gpt-4o-mini'
             setAiModelApiModel(val)
             scheduleConfigSave('aiModelApiModel', () => configService.setAiModelApiModel(val))
+          }}
+          style={{ width: 260 }}
+        />
+      </div>
+
+      <div className="form-group">
+        <label>通用 Max Tokens</label>
+        <span className="form-hint">
+          设置单次请求的最大输出 token 数量，见解与足迹共享该值。默认 <code>200</code>。
+        </span>
+        <input
+          type="number"
+          className="field-input"
+          value={aiModelApiMaxTokens}
+          min={1}
+          max={65535}
+          step={1}
+          onChange={(e) => {
+            const parsed = parseInt(e.target.value, 10)
+            const val = Math.min(65535, Math.max(1, Number.isFinite(parsed) ? parsed : 200))
+            setAiModelApiMaxTokens(val)
+            scheduleConfigSave('aiModelApiMaxTokens', () => configService.setAiModelApiMaxTokens(val))
           }}
           style={{ width: 260 }}
         />

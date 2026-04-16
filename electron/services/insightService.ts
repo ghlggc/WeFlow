@@ -36,7 +36,9 @@ const SILENCE_SCAN_INITIAL_DELAY_MS = 3 * 60 * 1000
 
 /** 单次 API 请求超时（毫秒） */
 const API_TIMEOUT_MS = 45_000
-const API_MAX_TOKENS = 200
+const API_MAX_TOKENS_DEFAULT = 200
+const API_MAX_TOKENS_MIN = 1
+const API_MAX_TOKENS_MAX = 65_535
 const API_TEMPERATURE = 0.7
 
 /** 沉默天数阈值默认值 */
@@ -47,6 +49,7 @@ const INSIGHT_CONFIG_KEYS = new Set([
   'aiModelApiBaseUrl',
   'aiModelApiKey',
   'aiModelApiModel',
+  'aiModelApiMaxTokens',
   'aiInsightAllowSocialContext',
   'aiInsightSocialContextCount',
   'aiInsightWeiboCookie',
@@ -67,6 +70,7 @@ interface SharedAiModelConfig {
   apiBaseUrl: string
   apiKey: string
   model: string
+  maxTokens: number
 }
 
 // ─── 日志 ─────────────────────────────────────────────────────────────────────
@@ -171,6 +175,12 @@ function formatTimestamp(ts: number): string {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+function normalizeApiMaxTokens(value: unknown): number {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return API_MAX_TOKENS_DEFAULT
+  return Math.min(API_MAX_TOKENS_MAX, Math.max(API_MAX_TOKENS_MIN, Math.floor(numeric)))
+}
+
 /**
  * 调用 OpenAI 兼容 API（非流式），返回模型第一条消息内容。
  * 使用 Node 原生 https/http 模块，无需任何第三方 SDK。
@@ -180,7 +190,8 @@ function callApi(
   apiKey: string,
   model: string,
   messages: Array<{ role: string; content: string }>,
-  timeoutMs: number = API_TIMEOUT_MS
+  timeoutMs: number = API_TIMEOUT_MS,
+  maxTokens: number = API_MAX_TOKENS_DEFAULT
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const endpoint = buildApiUrl(apiBaseUrl, '/chat/completions')
@@ -195,7 +206,7 @@ function callApi(
     const body = JSON.stringify({
       model,
       messages,
-      max_tokens: API_MAX_TOKENS,
+      max_tokens: normalizeApiMaxTokens(maxTokens),
       temperature: API_TEMPERATURE,
       stream: false
     })
@@ -402,7 +413,7 @@ class InsightService {
    * 供设置页"测试连接"按钮调用。
    */
   async testConnection(): Promise<{ success: boolean; message: string }> {
-    const { apiBaseUrl, apiKey, model } = this.getSharedAiModelConfig()
+    const { apiBaseUrl, apiKey, model, maxTokens } = this.getSharedAiModelConfig()
 
     if (!apiBaseUrl || !apiKey) {
       return { success: false, message: '请先填写 API 地址和 API Key' }
@@ -417,6 +428,7 @@ class InsightService {
         [
           `Endpoint: ${endpoint}`,
           `Model: ${model}`,
+          `Max Tokens: ${maxTokens}`,
           '',
           '用户提示词：',
           requestMessages[0].content
@@ -428,7 +440,8 @@ class InsightService {
         apiKey,
         model,
         requestMessages,
-        15_000
+        15_000,
+        maxTokens
       )
       insightDebugSection('INFO', 'AI 测试连接输出原文', result)
       return { success: true, message: `连接成功，模型回复：${result.slice(0, 50)}` }
@@ -515,7 +528,7 @@ class InsightService {
       return { success: false, message: '请先在设置中开启「AI 足迹总结」' }
     }
 
-    const { apiBaseUrl, apiKey, model } = this.getSharedAiModelConfig()
+    const { apiBaseUrl, apiKey, model, maxTokens } = this.getSharedAiModelConfig()
     if (!apiBaseUrl || !apiKey) {
       return { success: false, message: '请先填写通用 AI 模型配置（API 地址和 Key）' }
     }
@@ -579,7 +592,8 @@ ${topMentionText}
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
-        25_000
+        25_000,
+        maxTokens
       )
       const insight = result.trim().slice(0, 400)
       if (!insight) return { success: false, message: '模型返回为空' }
@@ -611,8 +625,9 @@ ${topMentionText}
       || this.config.get('aiInsightApiModel')
       || 'gpt-4o-mini'
     ).trim() || 'gpt-4o-mini'
+    const maxTokens = normalizeApiMaxTokens(this.config.get('aiModelApiMaxTokens'))
 
-    return { apiBaseUrl, apiKey, model }
+    return { apiBaseUrl, apiKey, model, maxTokens }
   }
 
   private looksLikeWxid(text: string): boolean {
@@ -1050,7 +1065,7 @@ ${topMentionText}
     if (!sessionId) return
     if (!this.isEnabled()) return
 
-    const { apiBaseUrl, apiKey, model } = this.getSharedAiModelConfig()
+    const { apiBaseUrl, apiKey, model, maxTokens } = this.getSharedAiModelConfig()
     const allowContext = this.config.get('aiInsightAllowContext') as boolean
     const contextCount = (this.config.get('aiInsightContextCount') as number) || 40
     const resolvedDisplayName = await this.resolveInsightSessionDisplayName(sessionId, displayName)
@@ -1133,6 +1148,7 @@ ${topMentionText}
       [
         `接口地址：${endpoint}`,
         `模型：${model}`,
+        `Max Tokens：${maxTokens}`,
         `触发原因：${triggerReason}`,
         `上下文开关：${allowContext ? '开启' : '关闭'}`,
         `上下文条数：${contextCount}`,
@@ -1150,7 +1166,9 @@ ${topMentionText}
         apiBaseUrl,
         apiKey,
         model,
-        requestMessages
+        requestMessages,
+        API_TIMEOUT_MS,
+        maxTokens
       )
 
       insightLog('INFO', `API 返回原文: ${result.slice(0, 150)}`)
