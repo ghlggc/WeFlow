@@ -5,6 +5,21 @@ import './Avatar.scss'
 
 // 全局缓存已成功加载过的头像 URL，用于控制后续是否显示动画
 const loadedAvatarCache = new Set<string>()
+const MAX_LOADED_AVATAR_CACHE_SIZE = 3000
+
+const rememberLoadedAvatar = (src: string): void => {
+    if (!src) return
+    if (loadedAvatarCache.has(src)) {
+        loadedAvatarCache.delete(src)
+    }
+    loadedAvatarCache.add(src)
+
+    while (loadedAvatarCache.size > MAX_LOADED_AVATAR_CACHE_SIZE) {
+        const oldest = loadedAvatarCache.values().next().value as string | undefined
+        if (!oldest) break
+        loadedAvatarCache.delete(oldest)
+    }
+}
 
 interface AvatarProps {
     src?: string
@@ -123,7 +138,7 @@ export const Avatar = React.memo(function Avatar({
                         onLoad={() => {
                             if (src) {
                                 avatarLoadQueue.clearFailed(src)
-                                loadedAvatarCache.add(src)
+                                rememberLoadedAvatar(src)
                             }
                             setImageLoaded(true)
                             setImageError(false)

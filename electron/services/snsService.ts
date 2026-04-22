@@ -324,6 +324,9 @@ class SnsService {
     private configService: ConfigService
     private contactCache: ContactCacheService
     private imageCache = new Map<string, string>()
+    private imageCacheMeta = new Map<string, number>()
+    private readonly imageCacheTtlMs = 15 * 60 * 1000
+    private readonly imageCacheMaxEntries = 120
     private exportStatsCache: { totalPosts: number; totalFriends: number; myPosts: number | null; updatedAt: number } | null = null
     private userPostCountsCache: { counts: Record<string, number>; updatedAt: number } | null = null
     private readonly exportStatsCacheTtlMs = 5 * 60 * 1000
@@ -334,6 +337,38 @@ class SnsService {
     constructor() {
         this.configService = new ConfigService()
         this.contactCache = new ContactCacheService(this.configService.get('cachePath') as string)
+    }
+
+    clearMemoryCache(): void {
+        this.imageCache.clear()
+        this.imageCacheMeta.clear()
+    }
+
+    private pruneImageCache(now: number = Date.now()): void {
+        for (const [key, updatedAt] of this.imageCacheMeta.entries()) {
+            if (now - updatedAt > this.imageCacheTtlMs) {
+                this.imageCacheMeta.delete(key)
+                this.imageCache.delete(key)
+            }
+        }
+
+        while (this.imageCache.size > this.imageCacheMaxEntries) {
+            const oldestKey = this.imageCache.keys().next().value as string | undefined
+            if (!oldestKey) break
+            this.imageCache.delete(oldestKey)
+            this.imageCacheMeta.delete(oldestKey)
+        }
+    }
+
+    private rememberImageCache(cacheKey: string, dataUrl: string): void {
+        if (!cacheKey || !dataUrl) return
+        const now = Date.now()
+        if (this.imageCache.has(cacheKey)) {
+            this.imageCache.delete(cacheKey)
+        }
+        this.imageCache.set(cacheKey, dataUrl)
+        this.imageCacheMeta.set(cacheKey, now)
+        this.pruneImageCache(now)
     }
 
     private toOptionalString(value: unknown): string | undefined {
@@ -1239,20 +1274,27 @@ class SnsService {
         if (!url) return { success: false, error: 'url 不能为空' }
         const cacheKey = `${url}|${key ?? ''}`
 
-        if (this.imageCache.has(cacheKey)) {
-            const cachedDataUrl = this.imageCache.get(cacheKey) || ''
-            const base64Part = cachedDataUrl.split(',')[1] || ''
-            if (base64Part) {
-                try {
-                    const cachedBuf = Buffer.from(base64Part, 'base64')
-                    if (detectImageMime(cachedBuf, '').startsWith('image/')) {
-                        return { success: true, dataUrl: cachedDataUrl }
+        const cachedDataUrl = this.imageCache.get(cacheKey) || ''
+        if (cachedDataUrl) {
+            const cachedAt = this.imageCacheMeta.get(cacheKey) || 0
+            if (cachedAt > 0 && Date.now() - cachedAt <= this.imageCacheTtlMs) {
+                const base64Part = cachedDataUrl.split(',')[1] || ''
+                if (base64Part) {
+                    try {
+                        const cachedBuf = Buffer.from(base64Part, 'base64')
+                        if (detectImageMime(cachedBuf, '').startsWith('image/')) {
+                            this.imageCache.delete(cacheKey)
+                            this.imageCache.set(cacheKey, cachedDataUrl)
+                            this.imageCacheMeta.set(cacheKey, Date.now())
+                            return { success: true, dataUrl: cachedDataUrl }
+                        }
+                    } catch {
+                        // ignore and fall through to refetch
                     }
-                } catch {
-                    // ignore and fall through to refetch
                 }
             }
             this.imageCache.delete(cacheKey)
+            this.imageCacheMeta.delete(cacheKey)
         }
 
         const result = await this.fetchAndDecryptImage(url, key)
@@ -1269,7 +1311,7 @@ class SnsService {
                     return { success: false, error: '无效图片数据（可能密钥不匹配或缓存损坏）' }
                 }
                 const dataUrl = `data:${result.contentType};base64,${result.data.toString('base64')}`
-                this.imageCache.set(cacheKey, dataUrl)
+                this.rememberImageCache(cacheKey, dataUrl)
                 return { success: true, dataUrl }
             }
         }

@@ -347,6 +347,7 @@ class ChatService {
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean; bufferedMessages?: any[] }> = new Map()
   private messageCursorMutex: boolean = false
   private readonly messageBatchDefault = 50
+  private readonly messageCursorSessionLimit = 8
   private avatarCache: Map<string, ContactCacheEntry>
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
   private readonly defaultV1AesKey = 'cfcd208495d565ef'
@@ -671,6 +672,27 @@ class ChatService {
   /**
    * 关闭数据库连接
    */
+  private async closeMessageCursorBySession(sessionId: string): Promise<void> {
+    const state = this.messageCursors.get(sessionId)
+    if (!state) return
+    try {
+      await wcdbService.closeMessageCursor(state.cursor)
+    } catch (error) {
+      console.warn(`[ChatService] 关闭消息游标失败: ${sessionId}`, error)
+    } finally {
+      this.messageCursors.delete(sessionId)
+    }
+  }
+
+  private async trimMessageCursorStates(activeSessionId: string): Promise<void> {
+    if (this.messageCursors.size <= this.messageCursorSessionLimit) return
+    for (const [sessionId] of this.messageCursors) {
+      if (this.messageCursors.size <= this.messageCursorSessionLimit) break
+      if (sessionId === activeSessionId) continue
+      await this.closeMessageCursorBySession(sessionId)
+    }
+  }
+
   close(): void {
     try {
       for (const state of this.messageCursors.values()) {
@@ -1956,6 +1978,11 @@ class ChatService {
       }
 
       let state = this.messageCursors.get(sessionId)
+      if (state) {
+        // refresh insertion order so Map iteration approximates LRU
+        this.messageCursors.delete(sessionId)
+        this.messageCursors.set(sessionId, state)
+      }
 
       // 只在以下情况重新创建游标:
       // 1. 没有游标状态
@@ -1974,7 +2001,7 @@ class ChatService {
         // 关闭旧游标
         if (state) {
           try {
-            await wcdbService.closeMessageCursor(state.cursor)
+            await this.closeMessageCursorBySession(sessionId)
           } catch (e) {
             console.warn('[ChatService] 关闭旧游标失败:', e)
           }
@@ -1992,6 +2019,7 @@ class ChatService {
 
         state = { cursor: cursorResult.cursor, fetched: 0, batchSize, startTime, endTime, ascending }
         this.messageCursors.set(sessionId, state)
+        await this.trimMessageCursorStates(sessionId)
 
         // 如果需要跳过消息(offset > 0),逐批获取但不返回
         // 注意：仅在 offset === 0 时重建游标最安全；
@@ -2062,6 +2090,8 @@ class ChatService {
       const filtered = collected.messages || []
       const hasMore = collected.hasMore === true
       state.fetched += rawRowsConsumed
+      this.messageCursors.delete(sessionId)
+      this.messageCursors.set(sessionId, state)
       releaseMessageCursorMutex?.()
 
       this.messageCacheService.set(sessionId, filtered)

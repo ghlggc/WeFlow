@@ -375,7 +375,34 @@ let isAppQuitting = false
 let shutdownPromise: Promise<void> | null = null
 let tray: Tray | null = null
 let isClosePromptVisible = false
-const chatHistoryPayloadStore = new Map<string, { sessionId: string; title?: string; recordList: any[] }>()
+
+interface ChatHistoryPayloadEntry {
+  sessionId: string
+  title?: string
+  recordList: any[]
+  createdAt: number
+  lastAccessedAt: number
+}
+
+const chatHistoryPayloadStore = new Map<string, ChatHistoryPayloadEntry>()
+const chatHistoryPayloadTtlMs = 10 * 60 * 1000
+const chatHistoryPayloadMaxEntries = 20
+
+const pruneChatHistoryPayloadStore = (): void => {
+  const now = Date.now()
+
+  for (const [payloadId, payload] of chatHistoryPayloadStore.entries()) {
+    if (now - payload.createdAt > chatHistoryPayloadTtlMs) {
+      chatHistoryPayloadStore.delete(payloadId)
+    }
+  }
+
+  while (chatHistoryPayloadStore.size > chatHistoryPayloadMaxEntries) {
+    const oldestPayloadId = chatHistoryPayloadStore.keys().next().value as string | undefined
+    if (!oldestPayloadId) break
+    chatHistoryPayloadStore.delete(oldestPayloadId)
+  }
+}
 
 type WindowCloseBehavior = 'ask' | 'tray' | 'quit'
 
@@ -659,6 +686,62 @@ const setupCustomTitleBarWindow = (win: BrowserWindow): void => {
   win.webContents.on('did-finish-load', emitMaximizeState)
 }
 
+let notificationNavigateHandlerRegistered = false
+const focusMainWindowAndNavigate = (sessionId: string): void => {
+  const targetWindow = mainWindow
+  if (!targetWindow || targetWindow.isDestroyed()) return
+  if (targetWindow.isMinimized()) targetWindow.restore()
+  targetWindow.show()
+  targetWindow.focus()
+  targetWindow.webContents.send('navigate-to-session', sessionId)
+}
+
+const ensureNotificationNavigateHandlerRegistered = (): void => {
+  if (notificationNavigateHandlerRegistered) return
+  notificationNavigateHandlerRegistered = true
+  ipcMain.on('notification-clicked', (_event, sessionId) => {
+    focusMainWindowAndNavigate(String(sessionId || ''))
+  })
+  setNotificationNavigateHandler((sessionId: string) => {
+    focusMainWindowAndNavigate(String(sessionId || ''))
+  })
+}
+
+let wechatRequestHeaderInterceptorRegistered = false
+const ensureWeChatRequestHeaderInterceptor = (): void => {
+  if (wechatRequestHeaderInterceptorRegistered) return
+  wechatRequestHeaderInterceptorRegistered = true
+
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    {
+      urls: [
+        '*://*.qpic.cn/*',
+        '*://*.qlogo.cn/*',
+        '*://*.wechat.com/*',
+        '*://*.weixin.qq.com/*',
+        '*://*.wx.qq.com/*'
+      ]
+    },
+    (details, callback) => {
+      details.requestHeaders['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) WindowsWechat(0x63090719) XWEB/8351"
+      details.requestHeaders['Accept'] = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+      details.requestHeaders['Accept-Encoding'] = "gzip, deflate, br"
+      details.requestHeaders['Accept-Language'] = "zh-CN,zh;q=0.9"
+      details.requestHeaders['Connection'] = "keep-alive"
+      details.requestHeaders['Range'] = "bytes=0-"
+
+      let host = ''
+      try {
+        host = new URL(details.url).hostname.toLowerCase()
+      } catch {}
+      const isWxQQ = host === 'wx.qq.com' || host.endsWith('.wx.qq.com')
+      details.requestHeaders['Referer'] = isWxQQ ? 'https://wx.qq.com/' : 'https://servicewechat.com/'
+
+      callback({ cancel: false, requestHeaders: details.requestHeaders })
+    }
+  )
+}
+
 const getWindowCloseBehavior = (): WindowCloseBehavior => {
   const behavior = configService?.get('windowCloseBehavior')
   return behavior === 'tray' || behavior === 'quit' ? behavior : 'ask'
@@ -733,44 +816,6 @@ function createWindow(options: { autoShow?: boolean } = {}) {
   } else {
     win.loadFile(join(__dirname, '../dist/index.html'))
   }
-
-  // Handle notification click navigation
-  ipcMain.on('notification-clicked', (_, sessionId) => {
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-    win.webContents.send('navigate-to-session', sessionId)
-  })
-
-  // 设置用于D-Bus通知的Linux通知导航处理程序
-  setNotificationNavigateHandler((sessionId: string) => {
-    if (win.isMinimized()) win.restore()
-    win.show()
-    win.focus()
-    win.webContents.send('navigate-to-session', sessionId)
-  })
-
-  // 拦截请求，修改 Referer 和 User-Agent 以通过微信 CDN 鉴权
-  session.defaultSession.webRequest.onBeforeSendHeaders(
-    {
-      urls: [
-        '*://*.qpic.cn/*',
-        '*://*.qlogo.cn/*',
-        '*://*.wechat.com/*',
-        '*://*.weixin.qq.com/*'
-      ]
-    },
-    (details, callback) => {
-      details.requestHeaders['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) WindowsWechat(0x63090719) XWEB/8351"
-      details.requestHeaders['Accept'] = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-      details.requestHeaders['Accept-Encoding'] = "gzip, deflate, br"
-      details.requestHeaders['Accept-Language'] = "zh-CN,zh;q=0.9"
-      details.requestHeaders['Referer'] = "https://servicewechat.com/"
-      details.requestHeaders['Connection'] = "keep-alive"
-      details.requestHeaders['Range'] = "bytes=0-"
-      callback({ cancel: false, requestHeaders: details.requestHeaders })
-    }
-  )
 
   // 忽略微信 CDN 域名的证书错误（部分节点证书配置不正确）
   win.webContents.on('certificate-error', (event, url, _error, _cert, callback) => {
@@ -1179,7 +1224,11 @@ function createChatHistoryWindow(sessionId: string, messageId: number) {
 }
 
 function createChatHistoryPayloadWindow(payloadId: string) {
-  return createChatHistoryRouteWindow(`/chat-history-inline/${payloadId}`)
+  const win = createChatHistoryRouteWindow(`/chat-history-inline/${payloadId}`)
+  win.on('closed', () => {
+    chatHistoryPayloadStore.delete(payloadId)
+  })
+  return win
 }
 
 function createChatHistoryRouteWindow(route: string) {
@@ -1612,6 +1661,7 @@ const runLegacySnsCacheMigration = async (
 // 注册 IPC 处理器
 function registerIpcHandlers() {
   registerNotificationHandlers()
+  ensureNotificationNavigateHandlerRegistered()
   bizService.registerHandlers()
   // 配置相关
   ipcMain.handle('config:get', async (_, key: string) => {
@@ -1989,19 +2039,38 @@ function registerIpcHandlers() {
 
   ipcMain.handle('window:openChatHistoryPayloadWindow', (_, payload: { sessionId: string; title?: string; recordList: any[] }) => {
     const payloadId = randomUUID()
+    pruneChatHistoryPayloadStore()
+    const now = Date.now()
     chatHistoryPayloadStore.set(payloadId, {
       sessionId: String(payload?.sessionId || '').trim(),
       title: String(payload?.title || '').trim() || '聊天记录',
-      recordList: Array.isArray(payload?.recordList) ? payload.recordList : []
+      recordList: Array.isArray(payload?.recordList) ? payload.recordList : [],
+      createdAt: now,
+      lastAccessedAt: now
     })
+    pruneChatHistoryPayloadStore()
     createChatHistoryPayloadWindow(payloadId)
     return true
   })
 
   ipcMain.handle('window:getChatHistoryPayload', (_, payloadId: string) => {
-    const payload = chatHistoryPayloadStore.get(String(payloadId || '').trim())
+    pruneChatHistoryPayloadStore()
+    const normalizedPayloadId = String(payloadId || '').trim()
+    const payload = chatHistoryPayloadStore.get(normalizedPayloadId)
     if (!payload) return { success: false, error: '聊天记录载荷不存在或已失效' }
-    return { success: true, payload }
+    const nextPayload: ChatHistoryPayloadEntry = {
+      ...payload,
+      lastAccessedAt: Date.now()
+    }
+    chatHistoryPayloadStore.set(normalizedPayloadId, nextPayload)
+    return {
+      success: true,
+      payload: {
+        sessionId: nextPayload.sessionId,
+        title: nextPayload.title,
+        recordList: nextPayload.recordList
+      }
+    }
   })
 
   // 打开会话聊天窗口（同会话仅保留一个窗口并聚焦）
@@ -3052,6 +3121,7 @@ function registerIpcHandlers() {
   ipcMain.handle('cache:clearImages', async () => {
     const imageResult = await imageDecryptService.clearCache()
     const emojiResult = chatService.clearCaches({ includeMessages: false, includeContacts: false, includeEmojis: true })
+    snsService.clearMemoryCache()
     const errors = [imageResult, emojiResult]
       .filter((result) => !result.success)
       .map((result) => result.error)
@@ -3068,6 +3138,7 @@ function registerIpcHandlers() {
       imageDecryptService.clearCache()
     ])
     const chatResult = chatService.clearCaches()
+    snsService.clearMemoryCache()
     const errors = [analyticsResult, imageResult, chatResult]
       .filter((result) => !result.success)
       .map((result) => result.error)
@@ -3790,6 +3861,7 @@ app.whenReady().then(async () => {
 
   // 创建主窗口（不显示，由启动流程统一控制）
   updateSplashProgress(70, '正在准备主窗口...')
+  ensureWeChatRequestHeaderInterceptor()
   mainWindow = createWindow({ autoShow: false })
 
   let iconName = 'icon.ico';
@@ -3848,17 +3920,6 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.warn('[Tray] Failed to create tray icon:', e)
   }
-
-  // 配置网络服务
-  session.defaultSession.webRequest.onBeforeSendHeaders(
-    {
-      urls: ['*://*.qpic.cn/*', '*://*.wx.qq.com/*']
-    },
-    (details, callback) => {
-      details.requestHeaders['Referer'] = 'https://wx.qq.com/'
-      callback({ requestHeaders: details.requestHeaders })
-    }
-  )
 
   // 等待主窗口加载完成（真正耗时阶段，进度条末端呼吸光点）
   updateSplashProgress(70, '正在准备主窗口...', true)

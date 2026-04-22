@@ -496,11 +496,20 @@ class HttpService {
     const contentType = mimeTypes[ext] || 'application/octet-stream'
 
     try {
-      const fileBuffer = fs.readFileSync(fullPath)
+      const stat = fs.statSync(fullPath)
       res.setHeader('Content-Type', contentType)
-      res.setHeader('Content-Length', fileBuffer.length)
+      res.setHeader('Content-Length', stat.size)
       res.writeHead(200)
-      res.end(fileBuffer)
+
+      const stream = fs.createReadStream(fullPath)
+      stream.on('error', () => {
+        if (!res.headersSent) {
+          this.sendError(res, 500, 'Failed to read media file')
+        } else {
+          try { res.destroy() } catch {}
+        }
+      })
+      stream.pipe(res)
     } catch (e) {
       this.sendError(res, 500, 'Failed to read media file')
     }

@@ -12,6 +12,7 @@ export class MessageCacheService {
   private readonly cacheFilePath: string
   private cache: Record<string, SessionMessageCacheEntry> = {}
   private readonly sessionLimit = 150
+  private readonly maxSessionEntries = 48
 
   constructor(cacheBasePath?: string) {
     const basePath = cacheBasePath && cacheBasePath.trim().length > 0
@@ -36,11 +37,25 @@ export class MessageCacheService {
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === 'object') {
         this.cache = parsed
+        this.pruneSessionEntries()
       }
     } catch (error) {
       console.error('MessageCacheService: 载入缓存失败', error)
       this.cache = {}
     }
+  }
+
+  private pruneSessionEntries(): void {
+    const entries = Object.entries(this.cache || {})
+    if (entries.length <= this.maxSessionEntries) return
+
+    entries.sort((left, right) => {
+      const leftAt = Number(left[1]?.updatedAt || 0)
+      const rightAt = Number(right[1]?.updatedAt || 0)
+      return rightAt - leftAt
+    })
+
+    this.cache = Object.fromEntries(entries.slice(0, this.maxSessionEntries))
   }
 
   get(sessionId: string): SessionMessageCacheEntry | undefined {
@@ -56,6 +71,7 @@ export class MessageCacheService {
       updatedAt: Date.now(),
       messages: trimmed
     }
+    this.pruneSessionEntries()
     this.persist()
   }
 
