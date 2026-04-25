@@ -1092,16 +1092,21 @@ export interface ElectronAPI {
       estimatedSeconds: number
       sessions: Array<{ sessionId: string; displayName: string; totalCount: number; voiceCount: number }>
     }>
-    exportSessions: (sessionIds: string[], outputDir: string, options: ExportOptions) => Promise<{
+    exportSessions: (sessionIds: string[], outputDir: string, options: ExportOptions, controlOptions?: { taskId?: string }) => Promise<{
       success: boolean
       successCount?: number
       failCount?: number
+      paused?: boolean
+      stopped?: boolean
       pendingSessionIds?: string[]
       successSessionIds?: string[]
       failedSessionIds?: string[]
       sessionOutputPaths?: Record<string, string>
       error?: string
     }>
+    pauseTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
+    resumeTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
+    cancelTask: (taskId: string) => Promise<{ success: boolean; error?: string }>
     exportSession: (sessionId: string, outputPath: string, options: ExportOptions) => Promise<{
       success: boolean
       error?: string
@@ -1174,7 +1179,8 @@ export interface ElectronAPI {
       exportVideos?: boolean
       startTime?: number
       endTime?: number
-    }) => Promise<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; error?: string }>
+      taskId?: string
+    }) => Promise<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; paused?: boolean; stopped?: boolean; error?: string }>
     onExportProgress: (callback: (payload: { current: number; total: number; status: string }) => void) => () => void
     selectExportDir: () => Promise<{ canceled: boolean; filePath?: string }>
     getSnsUsernames: () => Promise<{ success: boolean; usernames?: string[]; error?: string }>

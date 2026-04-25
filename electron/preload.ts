@@ -463,8 +463,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   export: {
     getExportStats: (sessionIds: string[], options: any) =>
       ipcRenderer.invoke('export:getExportStats', sessionIds, options),
-    exportSessions: (sessionIds: string[], outputDir: string, options: any) =>
-      ipcRenderer.invoke('export:exportSessions', sessionIds, outputDir, options),
+    exportSessions: (sessionIds: string[], outputDir: string, options: any, controlOptions?: { taskId?: string }) =>
+      ipcRenderer.invoke('export:exportSessions', sessionIds, outputDir, options, controlOptions),
+    pauseTask: (taskId: string) =>
+      ipcRenderer.invoke('export:pauseTask', taskId),
+    resumeTask: (taskId: string) =>
+      ipcRenderer.invoke('export:resumeTask', taskId),
+    cancelTask: (taskId: string) =>
+      ipcRenderer.invoke('export:cancelTask', taskId),
     exportSession: (sessionId: string, outputPath: string, options: any) =>
       ipcRenderer.invoke('export:exportSession', sessionId, outputPath, options),
     exportContacts: (outputDir: string, options: any) =>

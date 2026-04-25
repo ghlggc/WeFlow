@@ -16,6 +16,7 @@ import { analyticsService } from './services/analyticsService'
 import { groupAnalyticsService } from './services/groupAnalyticsService'
 import { annualReportService } from './services/annualReportService'
 import { exportService, ExportOptions, ExportProgress } from './services/exportService'
+import { exportTaskControlService } from './services/exportTaskControlService'
 import { KeyService } from './services/keyService'
 import { KeyServiceLinux } from './services/keyServiceLinux'
 import { KeyServiceMac } from './services/keyServiceMac'
@@ -64,6 +65,42 @@ const defaultUpdateTrack: 'stable' | 'preview' | 'dev' = (() => {
   return 'stable'
 })()
 let configService: ConfigService | null = null
+const activeExportWorkers = new Map<string, Worker>()
+const activeExportTasks = new Set<string>()
+
+const normalizeExportTaskId = (taskId: unknown): string => String(taskId || '').trim()
+
+const postExportWorkerControl = (taskId: string, action: 'pause' | 'resume' | 'cancel') => {
+  const worker = activeExportWorkers.get(taskId)
+  if (!worker) return
+  try {
+    worker.postMessage({ type: `export:${action}` })
+  } catch (error) {
+    console.warn(`[export-task-control] failed to post ${action} to worker:`, error)
+  }
+}
+
+const finalizeExportTaskControlResult = async (taskId: string, result: any) => {
+  if (!taskId) return result
+  if (result?.stopped) {
+    const cleanup = await exportTaskControlService.cleanupTask(taskId)
+    if (!cleanup.success) {
+      return {
+        ...result,
+        success: false,
+        error: `导出已停止，但清理已导出文件失败：${cleanup.error || '未知错误'}`
+      }
+    }
+    return {
+      ...result,
+      cleanup
+    }
+  }
+  if (!result?.paused) {
+    exportTaskControlService.releaseTask(taskId)
+  }
+  return result
+}
 
 const normalizeUpdateTrack = (raw: unknown): 'stable' | 'preview' | 'dev' | null => {
   if (raw === 'stable' || raw === 'preview' || raw === 'dev') return raw
@@ -2636,16 +2673,25 @@ function registerIpcHandlers() {
 
   ipcMain.handle('sns:exportTimeline', async (event, options: any) => {
     const exportOptions = { ...(options || {}) }
+    const taskId = normalizeExportTaskId(exportOptions.taskId)
     delete exportOptions.taskId
+    const taskControl = taskId ? exportTaskControlService.createControl(taskId, String(exportOptions.outputDir || '')) : undefined
+    if (taskId) activeExportTasks.add(taskId)
 
-    return snsService.exportTimeline(
-      exportOptions,
-      (progress) => {
-        if (!event.sender.isDestroyed()) {
-          event.sender.send('sns:exportProgress', progress)
-        }
-      }
-    )
+    try {
+      const result = await snsService.exportTimeline(
+        exportOptions,
+        (progress) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('sns:exportProgress', progress)
+          }
+        },
+        taskControl
+      )
+      return finalizeExportTaskControlResult(taskId, result)
+    } finally {
+      if (taskId) activeExportTasks.delete(taskId)
+    }
   })
 
   ipcMain.handle('sns:selectExportDir', async () => {
@@ -2968,7 +3014,40 @@ function registerIpcHandlers() {
     return exportService.getExportStats(sessionIds, options)
   })
 
-  ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions) => {
+  ipcMain.handle('export:pauseTask', async (_, taskId: string) => {
+    const normalizedTaskId = normalizeExportTaskId(taskId)
+    if (!normalizedTaskId) return { success: false, error: '缺少导出任务 ID' }
+    const success = exportTaskControlService.pauseTask(normalizedTaskId)
+    if (success) postExportWorkerControl(normalizedTaskId, 'pause')
+    return { success }
+  })
+
+  ipcMain.handle('export:resumeTask', async (_, taskId: string) => {
+    const normalizedTaskId = normalizeExportTaskId(taskId)
+    if (!normalizedTaskId) return { success: false, error: '缺少导出任务 ID' }
+    const success = exportTaskControlService.resumeTask(normalizedTaskId)
+    if (success) postExportWorkerControl(normalizedTaskId, 'resume')
+    return { success }
+  })
+
+  ipcMain.handle('export:cancelTask', async (_, taskId: string) => {
+    const normalizedTaskId = normalizeExportTaskId(taskId)
+    if (!normalizedTaskId) return { success: false, error: '缺少导出任务 ID' }
+    const success = exportTaskControlService.cancelTask(normalizedTaskId)
+    if (success) postExportWorkerControl(normalizedTaskId, 'cancel')
+    if (success && !activeExportTasks.has(normalizedTaskId)) {
+      const cleanup = await exportTaskControlService.cleanupTask(normalizedTaskId)
+      return cleanup.success
+        ? { success: true, cleanup }
+        : { success: false, error: cleanup.error || '清理已导出文件失败' }
+    }
+    return { success }
+  })
+
+  ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions, controlOptions?: { taskId?: string }) => {
+    const taskId = normalizeExportTaskId(controlOptions?.taskId)
+    const taskControl = taskId ? exportTaskControlService.createControl(taskId, outputDir) : undefined
+    if (taskId) activeExportTasks.add(taskId)
     const PROGRESS_FORWARD_INTERVAL_MS = 180
     let pendingProgress: ExportProgress | null = null
     let progressTimer: NodeJS.Timeout | null = null
@@ -3014,7 +3093,7 @@ function registerIpcHandlers() {
 
     const runMainFallback = async (reason: string) => {
       console.warn(`[fallback-export-main] ${reason}`)
-      return exportService.exportSessions(sessionIds, outputDir, options, onProgress)
+      return exportService.exportSessions(sessionIds, outputDir, options, onProgress, taskControl)
     }
 
     const cfg = configService || new ConfigService()
@@ -3036,6 +3115,7 @@ function registerIpcHandlers() {
             sessionIds,
             outputDir,
             options,
+            taskId,
             dbPath,
             decryptKey,
             myWxid,
@@ -3046,9 +3126,15 @@ function registerIpcHandlers() {
         })
 
         let settled = false
+        if (taskId) {
+          activeExportWorkers.set(taskId, worker)
+        }
         const finalizeResolve = (value: any) => {
           if (settled) return
           settled = true
+          if (taskId && activeExportWorkers.get(taskId) === worker) {
+            activeExportWorkers.delete(taskId)
+          }
           worker.removeAllListeners()
           void worker.terminate()
           resolve(value)
@@ -3056,6 +3142,9 @@ function registerIpcHandlers() {
         const finalizeReject = (error: Error) => {
           if (settled) return
           settled = true
+          if (taskId && activeExportWorkers.get(taskId) === worker) {
+            activeExportWorkers.delete(taskId)
+          }
           worker.removeAllListeners()
           void worker.terminate()
           reject(error)
@@ -3064,6 +3153,14 @@ function registerIpcHandlers() {
         worker.on('message', (msg: any) => {
           if (msg && msg.type === 'export:progress') {
             onProgress(msg.data as ExportProgress)
+            return
+          }
+          if (msg && msg.type === 'export:createdFile' && taskId) {
+            exportTaskControlService.recordCreatedFile(taskId, String(msg.filePath || ''))
+            return
+          }
+          if (msg && msg.type === 'export:createdDir' && taskId) {
+            exportTaskControlService.recordCreatedDir(taskId, String(msg.dirPath || ''))
             return
           }
           if (msg && msg.type === 'export:result') {
@@ -3091,10 +3188,13 @@ function registerIpcHandlers() {
     }
 
     try {
-      return await runWorker()
+      const result = await runWorker()
+      return await finalizeExportTaskControlResult(taskId, result)
     } catch (error) {
-      return runMainFallback(error instanceof Error ? error.message : String(error))
+      const result = await runMainFallback(error instanceof Error ? error.message : String(error))
+      return await finalizeExportTaskControlResult(taskId, result)
     } finally {
+      if (taskId) activeExportTasks.delete(taskId)
       flushProgress()
       if (progressTimer) {
         clearTimeout(progressTimer)
