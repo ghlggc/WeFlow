@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react'
-import { RefreshCw, Search, X, Download, FolderOpen, FileJson, FileText, Image, CheckCircle, AlertCircle, Calendar, Info, Shield, ShieldOff, Loader2 } from 'lucide-react'
+import { RefreshCw, Search, X, Download, FolderOpen, FileJson, FileText, Image, CheckCircle, AlertCircle, Calendar, Info, Shield, ShieldOff, Loader2, Pause, Play, Square } from 'lucide-react'
 import './SnsPage.scss'
 import { SnsPost } from '../types/sns'
 import { SnsPostItem } from '../components/Sns/SnsPostItem'
@@ -64,9 +64,41 @@ interface SnsOverviewStats {
 
 type OverviewStatsStatus = 'loading' | 'ready' | 'error'
 type SnsExportScope = { kind: 'all' } | { kind: 'selected'; usernames: string[] }
+type SnsExportTaskStatus = 'idle' | 'running' | 'pause_requested' | 'paused' | 'cancel_requested'
+
+interface SnsExportProgress {
+    current: number
+    total: number
+    status: string
+}
+
+interface SnsExportResult {
+    success: boolean
+    filePath?: string
+    postCount?: number
+    mediaCount?: number
+    paused?: boolean
+    stopped?: boolean
+    error?: string
+}
+
+interface SnsExportRequest {
+    taskId: string
+    outputDir: string
+    format: 'json' | 'html' | 'arkmejson'
+    usernames?: string[]
+    keyword?: string
+    exportImages: boolean
+    exportLivePhotos: boolean
+    exportVideos: boolean
+    startTime?: number
+    endTime?: number
+}
 
 const SIDEBAR_USER_PROFILE_CACHE_KEY = 'sidebar_user_profile_cache_v1'
 const SNS_CACHE_MIGRATION_PROMPT_SESSION_KEY = 'sns_cache_migration_prompted_v1'
+
+const createSnsExportTaskId = (): string => `sns-export-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 interface SnsCacheMigrationItem {
     label: string
@@ -179,8 +211,9 @@ export default function SnsPage() {
         () => createExportDateRangeSelectionFromPreset('all')
     )
     const [isExporting, setIsExporting] = useState(false)
-    const [exportProgress, setExportProgress] = useState<{ current: number; total: number; status: string } | null>(null)
-    const [exportResult, setExportResult] = useState<{ success: boolean; filePath?: string; postCount?: number; mediaCount?: number; error?: string } | null>(null)
+    const [exportTaskStatus, setExportTaskStatus] = useState<SnsExportTaskStatus>('idle')
+    const [exportProgress, setExportProgress] = useState<SnsExportProgress | null>(null)
+    const [exportResult, setExportResult] = useState<SnsExportResult | null>(null)
     const [refreshSpin, setRefreshSpin] = useState(false)
     const [isExportDateRangeDialogOpen, setIsExportDateRangeDialogOpen] = useState(false)
 
@@ -211,6 +244,8 @@ export default function SnsPage() {
     const snsUserPostCountsCacheScopeKeyRef = useRef('')
     const activeContactsLoadTaskIdRef = useRef<string | null>(null)
     const activeContactsCountTaskIdRef = useRef<string | null>(null)
+    const activeExportTaskIdRef = useRef<string | null>(null)
+    const activeExportRequestRef = useRef<SnsExportRequest | null>(null)
     const scrollAdjustmentRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
     const pendingResetFeedRef = useRef(false)
     const contactsLoadTokenRef = useRef(0)
@@ -465,7 +500,11 @@ export default function SnsPage() {
             : overviewStatsStatus === 'loading' || contactsLoading
     )
 
-    const canStartExport = Boolean(exportFolder) && !isExporting && (
+    const isExportLocked = isExporting || exportTaskStatus !== 'idle'
+    const canPauseExport = exportTaskStatus === 'running'
+    const canResumeExport = exportTaskStatus === 'paused' || exportTaskStatus === 'pause_requested'
+    const canCancelExport = exportTaskStatus !== 'idle'
+    const canStartExport = Boolean(exportFolder) && !isExportLocked && (
         exportScope.kind === 'all' || exportScope.usernames.length > 0
     )
 
@@ -772,14 +811,205 @@ export default function SnsPage() {
 
     const exportDateRangeLabel = useMemo(() => getExportDateRangeLabel(exportDateRangeSelection), [exportDateRangeSelection])
 
+    const clearActiveExportTask = useCallback(() => {
+        activeExportTaskIdRef.current = null
+        activeExportRequestRef.current = null
+        setExportTaskStatus('idle')
+        setIsExporting(false)
+    }, [])
+
+    const buildSnsExportRequest = useCallback((taskId: string): SnsExportRequest => ({
+        taskId,
+        outputDir: exportFolder,
+        format: exportFormat,
+        usernames: exportScope.kind === 'selected' ? [...exportScope.usernames] : undefined,
+        keyword: searchKeyword || undefined,
+        exportImages,
+        exportLivePhotos,
+        exportVideos,
+        startTime: exportDateRangeSelection.useAllTime
+            ? undefined
+            : Math.floor(exportDateRangeSelection.dateRange.start.getTime() / 1000),
+        endTime: exportDateRangeSelection.useAllTime
+            ? undefined
+            : Math.floor(exportDateRangeSelection.dateRange.end.getTime() / 1000)
+    }), [
+        exportDateRangeSelection,
+        exportFolder,
+        exportFormat,
+        exportImages,
+        exportLivePhotos,
+        exportScope,
+        exportVideos,
+        searchKeyword
+    ])
+
+    const runSnsExport = useCallback(async (request: SnsExportRequest, statusText = '准备导出...') => {
+        activeExportTaskIdRef.current = request.taskId
+        activeExportRequestRef.current = request
+        setIsExporting(true)
+        setExportTaskStatus('running')
+        setExportResult(null)
+        setExportProgress(prev => prev || { current: 0, total: 0, status: statusText })
+
+        let keepTaskActive = false
+        const removeProgress = window.electronAPI.sns.onExportProgress((progress: SnsExportProgress) => {
+            setExportProgress(progress)
+        })
+
+        try {
+            const result = await window.electronAPI.sns.exportTimeline(request)
+            if (!result.success) {
+                setExportResult(result)
+                return
+            }
+
+            if (result.paused) {
+                keepTaskActive = true
+                setExportTaskStatus('paused')
+                setExportProgress(prev => ({
+                    current: Math.max(prev?.current || 0, result.postCount || 0),
+                    total: Math.max(prev?.total || 0, result.postCount || 0),
+                    status: '已暂停，可继续或取消'
+                }))
+                return
+            }
+
+            if (result.stopped) {
+                setExportResult(null)
+                setExportProgress(null)
+                setShowExportDialog(false)
+                return
+            }
+
+            setExportResult(result)
+        } catch (e: any) {
+            setExportResult({ success: false, error: e.message || String(e) })
+        } finally {
+            removeProgress()
+            setIsExporting(false)
+            if (!keepTaskActive) {
+                activeExportTaskIdRef.current = null
+                activeExportRequestRef.current = null
+                setExportTaskStatus('idle')
+            }
+        }
+    }, [])
+
+    const handleStartSnsExport = useCallback(() => {
+        if (!canStartExport) return
+        const request = buildSnsExportRequest(createSnsExportTaskId())
+        setExportProgress({ current: 0, total: 0, status: '准备导出...' })
+        void runSnsExport(request)
+    }, [buildSnsExportRequest, canStartExport, runSnsExport])
+
+    const handlePauseSnsExport = useCallback(() => {
+        const taskId = activeExportTaskIdRef.current
+        if (!taskId || exportTaskStatus !== 'running') return
+        setExportTaskStatus('pause_requested')
+        setExportProgress(prev => ({
+            current: prev?.current || 0,
+            total: prev?.total || 0,
+            status: '暂停请求已发送，正在等待安全检查点'
+        }))
+        window.electronAPI.export.pauseTask(taskId).then(result => {
+            if (result.success) return
+            setExportTaskStatus(current => current === 'pause_requested' ? 'running' : current)
+            setExportProgress(prev => ({
+                current: prev?.current || 0,
+                total: prev?.total || 0,
+                status: result.error || '暂停请求失败'
+            }))
+        }).catch(error => {
+            setExportTaskStatus(current => current === 'pause_requested' ? 'running' : current)
+            setExportProgress(prev => ({
+                current: prev?.current || 0,
+                total: prev?.total || 0,
+                status: String(error)
+            }))
+        })
+    }, [exportTaskStatus])
+
+    const handleResumeSnsExport = useCallback(() => {
+        const taskId = activeExportTaskIdRef.current
+        const request = activeExportRequestRef.current
+        if (!taskId || !request || (exportTaskStatus !== 'paused' && exportTaskStatus !== 'pause_requested')) return
+        setExportTaskStatus('running')
+        setExportProgress(prev => ({
+            current: prev?.current || 0,
+            total: prev?.total || 0,
+            status: '正在继续导出...'
+        }))
+        window.electronAPI.export.resumeTask(taskId).then(result => {
+            if (!result.success) {
+                setExportTaskStatus('paused')
+                setExportProgress(prev => ({
+                    current: prev?.current || 0,
+                    total: prev?.total || 0,
+                    status: result.error || '继续任务失败'
+                }))
+                return
+            }
+            void runSnsExport(request, '正在继续导出...')
+        }).catch(error => {
+            setExportTaskStatus('paused')
+            setExportProgress(prev => ({
+                current: prev?.current || 0,
+                total: prev?.total || 0,
+                status: String(error)
+            }))
+        })
+    }, [exportTaskStatus, runSnsExport])
+
+    const handleCancelSnsExport = useCallback(() => {
+        const taskId = activeExportTaskIdRef.current
+        if (!taskId || exportTaskStatus === 'idle' || exportTaskStatus === 'cancel_requested') return
+        const shouldCloseAfterAck = exportTaskStatus === 'paused' || !isExporting
+        setExportTaskStatus('cancel_requested')
+        setExportProgress(prev => ({
+            current: prev?.current || 0,
+            total: prev?.total || 0,
+            status: '取消请求已发送，正在安全停止并清理'
+        }))
+        window.electronAPI.export.cancelTask(taskId).then(result => {
+            if (!result.success) {
+                setExportTaskStatus(shouldCloseAfterAck ? 'paused' : 'running')
+                setExportProgress(prev => ({
+                    current: prev?.current || 0,
+                    total: prev?.total || 0,
+                    status: result.error || '取消任务失败'
+                }))
+                return
+            }
+            if (shouldCloseAfterAck) {
+                clearActiveExportTask()
+                setExportResult(null)
+                setExportProgress(null)
+                setShowExportDialog(false)
+            }
+        }).catch(error => {
+            setExportTaskStatus(shouldCloseAfterAck ? 'paused' : 'running')
+            setExportProgress(prev => ({
+                current: prev?.current || 0,
+                total: prev?.total || 0,
+                status: String(error)
+            }))
+        })
+    }, [clearActiveExportTask, exportTaskStatus, isExporting])
+
     const openExportDialog = useCallback((scope: SnsExportScope) => {
+        if (isExportLocked) {
+            setShowExportDialog(true)
+            return
+        }
         setExportScope(scope)
         setExportResult(null)
         setExportProgress(null)
+        clearActiveExportTask()
         setExportDateRangeSelection(createExportDateRangeSelectionFromPreset('all'))
         setIsExportDateRangeDialogOpen(false)
         setShowExportDialog(true)
-    }, [])
+    }, [clearActiveExportTask, isExportLocked])
 
     const loadPosts = useCallback(async (options: { reset?: boolean, direction?: 'older' | 'newer' } = {}) => {
         const { reset = false, direction = 'older' } = options
@@ -2048,11 +2278,11 @@ export default function SnsPage() {
 
             {/* 导出对话框 */}
             {showExportDialog && (
-                <div className="modal-overlay" onClick={() => !isExporting && setShowExportDialog(false)}>
+                <div className="modal-overlay" onClick={() => !isExportLocked && setShowExportDialog(false)}>
                     <div className="export-dialog" onClick={(e) => e.stopPropagation()}>
                         <div className="export-dialog-header">
                             <h3>导出朋友圈</h3>
-                            <button className="close-btn" onClick={() => !isExporting && setShowExportDialog(false)} disabled={isExporting}>
+                            <button className="close-btn" onClick={() => !isExportLocked && setShowExportDialog(false)} disabled={isExportLocked}>
                                 <X size={20} />
                             </button>
                         </div>
@@ -2078,7 +2308,7 @@ export default function SnsPage() {
                                             <button
                                                 className={`format-option ${exportFormat === 'html' ? 'active' : ''}`}
                                                 onClick={() => setExportFormat('html')}
-                                                disabled={isExporting}
+                                                disabled={isExportLocked}
                                             >
                                                 <FileText size={20} />
                                                 <span>HTML</span>
@@ -2087,7 +2317,7 @@ export default function SnsPage() {
                                             <button
                                                 className={`format-option ${exportFormat === 'json' ? 'active' : ''}`}
                                                 onClick={() => setExportFormat('json')}
-                                                disabled={isExporting}
+                                                disabled={isExportLocked}
                                             >
                                                 <FileJson size={20} />
                                                 <span>JSON</span>
@@ -2096,7 +2326,7 @@ export default function SnsPage() {
                                             <button
                                                 className={`format-option ${exportFormat === 'arkmejson' ? 'active' : ''}`}
                                                 onClick={() => setExportFormat('arkmejson')}
-                                                disabled={isExporting}
+                                                disabled={isExportLocked}
                                             >
                                                 <FileJson size={20} />
                                                 <span>ArkmeJSON</span>
@@ -2124,7 +2354,7 @@ export default function SnsPage() {
                                                         setExportFolder(result.filePath)
                                                     }
                                                 }}
-                                                disabled={isExporting}
+                                                disabled={isExportLocked}
                                             >
                                                 <FolderOpen size={16} />
                                             </button>
@@ -2139,9 +2369,9 @@ export default function SnsPage() {
                                                 type="button"
                                                 className="time-range-trigger sns-export-time-range-trigger"
                                                 onClick={() => {
-                                                    if (!isExporting) setIsExportDateRangeDialogOpen(true)
+                                                    if (!isExportLocked) setIsExportDateRangeDialogOpen(true)
                                                 }}
-                                                disabled={isExporting}
+                                                disabled={isExportLocked}
                                             >
                                                 <span>{exportDateRangeLabel}</span>
                                                 <span className="time-range-arrow">&gt;</span>
@@ -2161,7 +2391,7 @@ export default function SnsPage() {
                                                     type="checkbox"
                                                     checked={exportImages}
                                                     onChange={(e) => setExportImages(e.target.checked)}
-                                                    disabled={isExporting}
+                                                    disabled={isExportLocked}
                                                 />
                                                 图片
                                             </label>
@@ -2170,7 +2400,7 @@ export default function SnsPage() {
                                                     type="checkbox"
                                                     checked={exportLivePhotos}
                                                     onChange={(e) => setExportLivePhotos(e.target.checked)}
-                                                    disabled={isExporting}
+                                                    disabled={isExportLocked}
                                                 />
                                                 实况图
                                             </label>
@@ -2179,7 +2409,7 @@ export default function SnsPage() {
                                                     type="checkbox"
                                                     checked={exportVideos}
                                                     onChange={(e) => setExportVideos(e.target.checked)}
-                                                    disabled={isExporting}
+                                                    disabled={isExportLocked}
                                                 />
                                                 视频
                                             </label>
@@ -2194,7 +2424,7 @@ export default function SnsPage() {
                                     </div>
 
                                     {/* 进度条 */}
-                                    {isExporting && exportProgress && (
+                                    {isExportLocked && exportProgress && (
                                         <div className="export-progress">
                                             <div className="export-progress-bar">
                                                 <div
@@ -2203,6 +2433,39 @@ export default function SnsPage() {
                                                 />
                                             </div>
                                             <span className="export-progress-text">{exportProgress.status}</span>
+                                            <div className="export-progress-actions">
+                                                {canPauseExport && (
+                                                    <button
+                                                        type="button"
+                                                        className="export-progress-btn"
+                                                        onClick={handlePauseSnsExport}
+                                                    >
+                                                        <Pause size={14} />
+                                                        暂停
+                                                    </button>
+                                                )}
+                                                {canResumeExport && (
+                                                    <button
+                                                        type="button"
+                                                        className="export-progress-btn primary"
+                                                        onClick={handleResumeSnsExport}
+                                                    >
+                                                        <Play size={14} />
+                                                        继续
+                                                    </button>
+                                                )}
+                                                {canCancelExport && (
+                                                    <button
+                                                        type="button"
+                                                        className="export-progress-btn danger"
+                                                        onClick={handleCancelSnsExport}
+                                                        disabled={exportTaskStatus === 'cancel_requested'}
+                                                    >
+                                                        <Square size={14} />
+                                                        {exportTaskStatus === 'cancel_requested' ? '取消中' : '取消'}
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
                                     )}
 
@@ -2211,47 +2474,14 @@ export default function SnsPage() {
                                         <button
                                             className="export-cancel-btn"
                                             onClick={() => setShowExportDialog(false)}
-                                            disabled={isExporting}
+                                            disabled={isExportLocked}
                                         >
                                             取消
                                         </button>
                                         <button
                                             className="export-start-btn"
                                             disabled={!canStartExport}
-                                            onClick={async () => {
-                                                setIsExporting(true)
-                                                setExportProgress({ current: 0, total: 0, status: '准备导出...' })
-                                                setExportResult(null)
-
-                                                // 监听进度
-                                                const removeProgress = window.electronAPI.sns.onExportProgress((progress: any) => {
-                                                    setExportProgress(progress)
-                                                })
-
-                                                try {
-                                                    const result = await window.electronAPI.sns.exportTimeline({
-                                                        outputDir: exportFolder,
-                                                        format: exportFormat,
-                                                        usernames: exportScope.kind === 'selected' ? exportScope.usernames : undefined,
-                                                        keyword: searchKeyword || undefined,
-                                                        exportImages,
-                                                        exportLivePhotos,
-                                                        exportVideos,
-                                                        startTime: exportDateRangeSelection.useAllTime
-                                                            ? undefined
-                                                            : Math.floor(exportDateRangeSelection.dateRange.start.getTime() / 1000),
-                                                        endTime: exportDateRangeSelection.useAllTime
-                                                            ? undefined
-                                                            : Math.floor(exportDateRangeSelection.dateRange.end.getTime() / 1000)
-                                                    })
-                                                    setExportResult(result)
-                                                } catch (e: any) {
-                                                    setExportResult({ success: false, error: e.message || String(e) })
-                                                } finally {
-                                                    setIsExporting(false)
-                                                    removeProgress()
-                                                }
-                                            }}
+                                            onClick={handleStartSnsExport}
                                         >
                                             {isExporting ? '导出中...' : '开始导出'}
                                         </button>

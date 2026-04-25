@@ -2729,6 +2729,54 @@
         color: var(--text-tertiary);
         text-align: center;
     }
+
+    .export-progress-actions {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 4px;
+    }
+
+    .export-progress-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-width: 82px;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-secondary);
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+
+        &:hover:not(:disabled) {
+            background: var(--hover-bg);
+            color: var(--text-primary);
+        }
+
+        &.primary {
+            border-color: color-mix(in srgb, var(--primary) 36%, var(--border-color));
+            background: rgba(var(--primary-rgb), 0.1);
+            color: var(--primary);
+        }
+
+        &.danger {
+            border-color: color-mix(in srgb, #ff4d4f 36%, var(--border-color));
+            background: color-mix(in srgb, #ff4d4f 10%, var(--bg-secondary));
+            color: #d9363e;
+        }
+
+        &:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+    }
 }
 
 .export-result {
