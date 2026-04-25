@@ -58,7 +58,7 @@ export interface BackupManifest {
   options?: BackupOptions
   databases: Array<{
     id: string
-    kind: 'session' | 'contact' | 'emoticon' | 'message' | 'media' | 'sns'
+    kind: 'session' | 'contact' | 'emoticon' | 'message' | 'media' | 'sns' | 'hardlink'
     dbPath: string
     relativePath: string
     tables: Array<{

@@ -9,7 +9,7 @@ import { wcdbService } from './wcdbService'
 import { expandHomePath } from '../utils/pathUtils'
 import { decryptDatViaNative, encryptDatViaNative, type NativeDatMeta } from './nativeImageDecrypt'
 
-type BackupDbKind = 'session' | 'contact' | 'emoticon' | 'message' | 'media' | 'sns'
+type BackupDbKind = 'session' | 'contact' | 'emoticon' | 'message' | 'media' | 'sns' | 'hardlink'
 type BackupPhase = 'preparing' | 'scanning' | 'exporting' | 'packing' | 'inspecting' | 'restoring' | 'done' | 'failed'
 type BackupResourceKind = 'image' | 'video' | 'file'
 const TEMP_MARKER = '.weflow-backup-temp'
@@ -497,7 +497,7 @@ export class BackupService {
   }
 
   private buildDbId(kind: BackupDbKind, index: number, dbPath: string): string {
-    if (kind === 'session' || kind === 'contact' || kind === 'emoticon' || kind === 'sns') return kind
+    if (kind === 'session' || kind === 'contact' || kind === 'emoticon' || kind === 'sns' || kind === 'hardlink') return kind
     return `${kind}-${index}-${safeName(basename(dbPath)).slice(0, 80)}`
   }
 
@@ -521,6 +521,7 @@ export class BackupService {
     if (kind === 'contact') return 'contact/contact.db'
     if (kind === 'emoticon') return 'emoticon/emoticon.db'
     if (kind === 'sns') return 'sns/sns.db'
+    if (kind === 'hardlink') return 'hardlink/hardlink.db'
     return null
   }
 
@@ -570,12 +571,19 @@ export class BackupService {
         join(dirname(dbStorage), 'sns', 'sns.db')
       ])
     }
+    if (kind === 'hardlink') {
+      return this.findFirstExisting([
+        join(dbStorage, 'hardlink', 'hardlink.db'),
+        join(dbStorage, 'hardlink.db'),
+        join(dirname(dbStorage), 'hardlink.db')
+      ])
+    }
     return ''
   }
 
   private async collectDatabases(dbStorage: string): Promise<Array<Omit<BackupDbEntry, 'tables'>>> {
     const result: Array<Omit<BackupDbEntry, 'tables'>> = []
-    for (const kind of ['session', 'contact', 'emoticon', 'sns'] as const) {
+    for (const kind of ['session', 'contact', 'emoticon', 'sns', 'hardlink'] as const) {
       const dbPath = this.resolveKnownDbPath(kind, dbStorage)
       result.push({
         id: kind,
