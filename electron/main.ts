@@ -3957,8 +3957,7 @@ function registerIpcHandlers() {
 
   // 自动下载原图
   ipcMain.handle('image:startAutoDownload', async () => {
-    await imageDownloadService.startAutoDownload()
-    return { success: true }
+    return await imageDownloadService.startAutoDownload()
   })
 
   ipcMain.handle('image:stopAutoDownload', async () => {

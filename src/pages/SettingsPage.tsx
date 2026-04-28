@@ -327,6 +327,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiFootprintEnabled, setAiFootprintEnabled] = useState(false)
   const [aiFootprintSystemPrompt, setAiFootprintSystemPrompt] = useState('')
   const [aiInsightDebugLogEnabled, setAiInsightDebugLogEnabled] = useState(false)
+  const [autoDownloadStatus, setAutoDownloadStatus] = useState<{ isHooked: boolean; pid: number | null; supported: boolean } | null>(null)
 
   // 检查 Hello 可用性
   useEffect(() => {
@@ -705,6 +706,21 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   useEffect(() => {
     void refreshWhisperStatus(whisperModelDir)
   }, [whisperModelDir])
+
+  useEffect(() => {
+    if (activeTab === 'autoDownload') {
+      fetchAutoDownloadStatus()
+
+      let interval: ReturnType<typeof setInterval> | undefined
+      if (autoDownloadHighRes) {
+        interval = setInterval(fetchAutoDownloadStatus, 2000)
+      }
+
+      return () => {
+        if (interval) clearInterval(interval)
+      }
+    }
+  }, [activeTab, autoDownloadHighRes])
 
   const getErrorMessage = (error: any): string => {
     const raw = typeof error?.message === 'string' ? error.message : String(error ?? '')
@@ -1597,6 +1613,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       showMessage(`清除所有缓存失败: ${e}`, false)
     } finally {
       setIsClearingAllCache(false)
+    }
+  }
+
+  const fetchAutoDownloadStatus = async () => {
+    try {
+      const status = await (window as any).electronAPI.image.getAutoDownloadStatus()
+      setAutoDownloadStatus(status)
+    } catch (error) {
+      console.error('获取自动下载状态失败:', error)
     }
   }
 
@@ -4671,41 +4696,112 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   )
 
   const renderAutoDownloadTab = () => (
-    <div className="tab-content">
-      <div className="form-group">
-        <label>自动下载大图</label>
-        <span className="form-hint">
-          开启后，WeFlow 会通过远程 Hook 技术强制微信在接收图片时下载高清原图（而非默认的缩略图）。
-          <br />
-          <strong>风险提示</strong>：Hook 涉及修改微信进程内存，虽不注入 DLL 但仍有被检测风险，请谨慎开启。
-        </span>
-        <div className="log-toggle-line">
-          <span className="log-status">{autoDownloadHighRes ? '已开启' : '已关闭'}</span>
-          <label className="switch" htmlFor="auto-download-high-res-toggle">
-            <input
-              id="auto-download-high-res-toggle"
-              className="switch-input"
-              type="checkbox"
-              checked={autoDownloadHighRes}
-              onChange={handleToggleAutoDownload}
-            />
-            <span className="switch-slider" />
-          </label>
+      <div className="tab-content">
+        <div className="updates-hero" style={{ background: 'linear-gradient(110deg, var(--bg-primary) 0%, rgba(245, 158, 11, 0.1) 100%)', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
+          <div className="updates-hero-main">
+            <span className="updates-chip" style={{ color: '#f59e0b', background: 'rgba(245, 158, 11, 0.15)' }}>实验性功能</span>
+            <h2>自动下载原图</h2>
+            <p>强制微信在接收图片时下载高清原图，而非默认的模糊缩略图。</p>
+          </div>
+        </div>
+
+        <div className="form-group" style={{ marginTop: '24px' }}>
+          <div className="setting-control vertical has-border">
+            <div className="log-toggle-line" style={{ marginTop: 0, border: 'none', background: 'transparent', padding: 0 }}>
+              <div>
+                <span className="log-status" style={{ fontSize: '15px', fontWeight: 600 }}>启用自动下载</span>
+                <div style={{ marginTop: '4px', fontSize: '13px', color: 'var(--text-tertiary)' }}>
+                  开启后，WeFlow 将通过远程 Hook 技术干预微信进程。
+                </div>
+              </div>
+              <label className="switch switch-lg" htmlFor="auto-download-high-res-toggle">
+                <input
+                    id="auto-download-high-res-toggle"
+                    className="switch-input"
+                    type="checkbox"
+                    checked={autoDownloadHighRes}
+                    onChange={handleToggleAutoDownload}
+                />
+                <span className="switch-slider" />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="api-warning-modal" style={{ width: '100%', animation: 'none', boxShadow: 'none', border: '1px solid var(--border-color)', marginTop: '20px' }}>
+          <div className="modal-header" style={{ padding: '16px 20px', background: 'var(--bg-tertiary)' }}>
+            <ShieldCheck size={18} />
+            <h3 style={{ fontSize: '14px' }}>运行状态</h3>
+          </div>
+          <div className="modal-body" style={{ padding: '16px 20px' }}>
+            {!autoDownloadHighRes ? (
+                <div className="warning-item"><span style={{ color: 'var(--text-tertiary)' }}>服务未启动</span></div>
+            ) : !autoDownloadStatus ? (
+                <div className="warning-item"><span>正在检测状态...</span></div>
+            ) : !autoDownloadStatus.supported ? (
+                <div className="warning-item"><span style={{ color: 'var(--danger)' }}>⚠️ 当前系统架构不支持此功能（仅支持 Win32 x64）</span></div>
+            ) : autoDownloadStatus.isHooked ? (
+                <div className="warning-item">
+                  <span style={{ color: '#10b981', fontWeight: 'bold' }}>✓ 运行中</span>
+                  <span style={{ marginLeft: '12px', color: 'var(--text-secondary)' }}>已成功挂载到微信进程 (PID: {autoDownloadStatus.pid})</span>
+                </div>
+            ) : (
+                <div className="warning-item">
+                  <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>⏳ 等待中</span>
+                  <span style={{ marginLeft: '12px', color: 'var(--text-secondary)' }}>未检测到微信主进程 (Weixin.exe) 运行，请启动微信</span>
+                </div>
+            )}
+          </div>
+        </div>
+
+        <div className="api-warning-modal" style={{ width: '100%', animation: 'none', boxShadow: 'none', border: '1px solid rgba(239, 68, 68, 0.3)', marginTop: '20px' }}>
+          <div className="modal-header" style={{ padding: '16px 20px', background: 'rgba(239, 68, 68, 0.05)', borderBottomColor: 'rgba(239, 68, 68, 0.2)' }}>
+            <ShieldCheck size={18} color="#ef4444" />
+            <h3 style={{ fontSize: '14px', color: '#ef4444' }}>风险提示</h3>
+          </div>
+          <div className="modal-body" style={{ padding: '16px 20px' }}>
+            <div className="warning-list">
+              <div className="warning-item">
+                <span className="bullet" style={{ color: '#ef4444' }}>•</span>
+                <span>此功能涉及hook修改微信进程内存</span>
+              </div>
+              <div className="warning-item">
+                <span className="bullet" style={{ color: '#ef4444' }}>•</span>
+                <span>虽然当前方案不直接注入 DLL，但<strong>仍存在被微信安全机制检测的风险</strong>。</span>
+              </div>
+              <div className="warning-item">
+                <span className="bullet" style={{ color: '#ef4444' }}>•</span>
+                <span>建议先少量测试使用，确认有无被检测的风险</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
   )
-
   const handleToggleAutoDownload = async () => {
     const newVal = !autoDownloadHighRes
     setAutoDownloadHighRes(newVal)
-    await configService.setAutoDownloadHighRes(newVal)
-    if (newVal) {
-      await (window as any).electronAPI.image.startAutoDownload()
-    } else {
-      await (window as any).electronAPI.image.stopAutoDownload()
+
+    try {
+      if (newVal) {
+        const result = await (window as any).electronAPI.image.startAutoDownload()
+        if (result && !result.success) {
+          // 如果底层明确返回了失败
+          throw new Error(result.error || '启动自动下载服务失败')
+        }
+        showMessage('自动下载已开启，正在尝试连接微信', true)
+        await fetchAutoDownloadStatus()
+      } else {
+        await (window as any).electronAPI.image.stopAutoDownload()
+        showMessage('自动下载已关闭', true)
+        setAutoDownloadStatus(null)
+      }
+      await configService.setAutoDownloadHighRes(newVal)
+    } catch (e: any) {
+      // 发生错误时，将开关拨回去
+      setAutoDownloadHighRes(!newVal)
+      showMessage(`操作失败: ${e.message || String(e)}`, false)
     }
-    showMessage(newVal ? '自动下载已开启' : '自动下载已关闭', true)
   }
 
   const renderUpdatesTab = () => {

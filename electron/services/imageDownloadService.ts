@@ -96,14 +96,16 @@ export class ImageDownloadService {
     }
   }
 
-  async startAutoDownload() {
-    if (!await this.ensureInitialized()) return
-    
-    if (this.pollTimer) return
-    
+  async startAutoDownload(): Promise<{ success: boolean; error?: string }> {
+    if (!await this.ensureInitialized()) {
+      return { success: false, error: '核心组件初始化失败，请检查环境' }
+    }
+
+    if (this.pollTimer) return { success: true }
+
     this.pollTimer = setInterval(() => this.checkAndHook(), 30000)
-    // Initial check
-    await this.checkAndHook()
+    // 首次尝试 Hook，并返回结果
+    return await this.checkAndHook(true)
   }
 
   async stopAutoDownload() {
@@ -114,19 +116,20 @@ export class ImageDownloadService {
     await this.unhook()
   }
 
-  private async checkAndHook() {
+  private async checkAndHook(isManualStart = false): Promise<{ success: boolean; error?: string }> {
     const pid = await this.findMainWeChatPid()
-    
+
     if (!pid) {
       if (this.isHooked) {
         console.log('[ImageDownloadService] WeChat exited, unhooking')
         await this.unhook()
       }
-      return
+      // 如果是手动开启时没找到进程，不认为是严重错误，只是挂起等待
+      return { success: true, error: '等待微信启动' }
     }
 
     if (this.isHooked && this.currentPid === pid) {
-      return
+      return { success: true }
     }
 
     if (this.isHooked && this.currentPid !== pid) {
@@ -141,12 +144,24 @@ export class ImageDownloadService {
         this.isHooked = true
         this.currentPid = pid
         console.log('[ImageDownloadService] hook successful')
+        return { success: true }
       } else {
         const err = this.getImgHelperError()
         console.error(`[ImageDownloadService] hook failed: ${err}`)
+        // 如果是手动点击开启时失败，停止轮询并向上报错
+        if (isManualStart && this.pollTimer) {
+          clearInterval(this.pollTimer)
+          this.pollTimer = null
+        }
+        return { success: false, error: err || 'Hook 失败' }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('[ImageDownloadService] InitImgHelper call crashed:', e)
+      if (isManualStart && this.pollTimer) {
+        clearInterval(this.pollTimer)
+        this.pollTimer = null
+      }
+      return { success: false, error: `调用异常: ${e.message || String(e)}` }
     }
   }
 
