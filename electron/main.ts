@@ -34,6 +34,7 @@ import { insightService } from './services/insightService'
 import { normalizeWeiboCookieInput, weiboService } from './services/social/weiboService'
 import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
+import { imageDownloadService } from './services/imageDownloadService'
 
 // 配置自动更新
 autoUpdater.autoDownload = false
@@ -3954,6 +3955,19 @@ function registerIpcHandlers() {
     }
   })
 
+  // 自动下载原图
+  ipcMain.handle('image:startAutoDownload', async (_, whitelist?: string[]) => {
+    return await imageDownloadService.startAutoDownload(whitelist || [])
+  })
+
+  ipcMain.handle('image:stopAutoDownload', async () => {
+    await imageDownloadService.stopAutoDownload()
+    return { success: true }
+  })
+
+  ipcMain.handle('image:getAutoDownloadStatus', async () => {
+    return await imageDownloadService.getStatus()
+  })
 }
 
 // 主窗口引用
@@ -4081,6 +4095,13 @@ app.whenReady().then(async () => {
   // 注册 IPC 处理器
   updateSplashProgress(28, '正在初始化...')
   registerIpcHandlers()
+  if (configService.get('autoDownloadHighRes')) {
+    const whitelistArr = configService.get('autoDownloadWhitelist') || []
+    const whitelistStr = (Array.isArray(whitelistArr) && whitelistArr.length > 0)
+      ? (whitelistArr.join('\0') + '\0\0')
+      : ''
+    imageDownloadService.startAutoDownload(whitelistStr)
+  }
   chatService.addDbMonitorListener((type, json) => {
     messagePushService.handleDbMonitorChange(type, json)
     insightService.handleDbMonitorChange(type, json)
@@ -4252,6 +4273,8 @@ const shutdownAppServices = async (): Promise<void> => {
     }, 5000)
     forceExitTimer.unref()
     try { await cloudControlService.stop() } catch {}
+    // 停止自动下载服务
+    try { await imageDownloadService.stopAutoDownload() } catch {}
     // 停止 chatService（内部会关闭 cursor 与 DB），避免退出阶段仍触发监控回调
     try { chatService.close() } catch {}
     // 停止 HTTP 服务器，释放 TCP 端口占用，避免进程无法退出

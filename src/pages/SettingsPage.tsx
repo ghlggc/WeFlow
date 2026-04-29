@@ -32,6 +32,7 @@ type SettingsTab =
   | 'aiCommon'
   | 'insight'
   | 'aiFootprint'
+  | 'autoDownload'
 
 const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint'>; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -39,6 +40,7 @@ const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint'>; label: string
   { id: 'antiRevoke', label: '防撤回', icon: RotateCcw },
   { id: 'database', label: '数据库连接', icon: Database },
   { id: 'models', label: '模型管理', icon: Mic },
+  { id: 'autoDownload', label: '自动下载', icon: Download },
   { id: 'cache', label: '缓存', icon: HardDrive },
   { id: 'api', label: 'API 服务', icon: Globe },
   { id: 'analytics', label: '分析', icon: BarChart2 },
@@ -46,6 +48,13 @@ const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint'>; label: string
   { id: 'updates', label: '版本更新', icon: RefreshCw },
   { id: 'about', label: '关于', icon: Info }
 ]
+
+const filteredTabs = tabs.filter(tab => {
+  if (tab.id === 'autoDownload') {
+    return (window as any).electronAPI.process.platform === 'win32' && (window as any).electronAPI.process.arch === 'x64'
+  }
+  return true
+})
 
 const aiTabs: Array<{ id: Extract<SettingsTab, 'aiCommon' | 'insight' | 'aiFootprint'>; label: string }> = [
   { id: 'aiCommon', label: '基础配置' },
@@ -149,6 +158,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [imageKeyPercent, setImageKeyPercent] = useState<number | null>(null)
 
   const [logEnabled, setLogEnabled] = useState(false)
+  const [autoDownloadHighRes, setAutoDownloadHighRes] = useState(false)
   const [whisperModelName, setWhisperModelName] = useState('base')
   const [whisperModelDir, setWhisperModelDir] = useState('')
   const [isWhisperDownloading, setIsWhisperDownloading] = useState(false)
@@ -317,6 +327,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiFootprintEnabled, setAiFootprintEnabled] = useState(false)
   const [aiFootprintSystemPrompt, setAiFootprintSystemPrompt] = useState('')
   const [aiInsightDebugLogEnabled, setAiInsightDebugLogEnabled] = useState(false)
+
+  // 自动下载图片
+  const [autoDownloadStatus, setAutoDownloadStatus] = useState<{ isHooked: boolean; pid: number | null; supported: boolean } | null>(null)
+  const [autoDownloadSelectedIds, setAutoDownloadSelectedIds] = useState<Set<string>>(new Set())
+  const [autoDownloadSearchKeyword, setAutoDownloadSearchKeyword] = useState('')
 
   // 检查 Hello 可用性
   useEffect(() => {
@@ -529,9 +544,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setWordCloudExcludeWords(savedExcludeWords)
       setExcludeWordsInput(savedExcludeWords.join('\n'))
 
+      const savedAutoDownloadHighRes = await configService.getAutoDownloadHighRes()
+      const savedAutoDownloadWhitelist = await configService.getAutoDownloadWhitelist()
       const savedAnalyticsConsent = await configService.getAnalyticsConsent()
       setAnalyticsConsent(savedAnalyticsConsent ?? false)
-
+      setAutoDownloadHighRes(savedAutoDownloadHighRes)
+      setAutoDownloadSelectedIds(new Set(savedAutoDownloadWhitelist))
 
 
       // 如果语言列表为空，保存默认值
@@ -693,6 +711,21 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   useEffect(() => {
     void refreshWhisperStatus(whisperModelDir)
   }, [whisperModelDir])
+
+  useEffect(() => {
+    if (activeTab === 'autoDownload') {
+      fetchAutoDownloadStatus()
+
+      let interval: ReturnType<typeof setInterval> | undefined
+      if (autoDownloadHighRes) {
+        interval = setInterval(fetchAutoDownloadStatus, 2000)
+      }
+
+      return () => {
+        if (interval) clearInterval(interval)
+      }
+    }
+  }, [activeTab, autoDownloadHighRes])
 
   const getErrorMessage = (error: any): string => {
     const raw = typeof error?.message === 'string' ? error.message : String(error ?? '')
@@ -1022,11 +1055,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   }
 
   useEffect(() => {
-    if (activeTab !== 'antiRevoke' && activeTab !== 'insight') return
+    if (activeTab !== 'antiRevoke' && activeTab !== 'insight' && activeTab !== 'autoDownload') return
     let canceled = false
     ;(async () => {
       try {
-        if (activeTab === 'antiRevoke') {
+        if (activeTab === 'antiRevoke' || activeTab === 'autoDownload') {
           await ensureAntiRevokeSessionsLoaded()
         } else {
           await ensureChatSessionsLoaded()
@@ -1585,6 +1618,15 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       showMessage(`清除所有缓存失败: ${e}`, false)
     } finally {
       setIsClearingAllCache(false)
+    }
+  }
+
+  const fetchAutoDownloadStatus = async () => {
+    try {
+      const status = await (window as any).electronAPI.image.getAutoDownloadStatus()
+      setAutoDownloadStatus(status)
+    } catch (error) {
+      console.error('获取自动下载状态失败:', error)
     }
   }
 
@@ -4658,6 +4700,203 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     </div>
   )
 
+  const renderAutoDownloadTab = () => {
+    const sortedSessions = [...antiRevokeSessions].sort((a, b) => (b.sortTimestamp || 0) - (a.sortTimestamp || 0))
+    const keyword = autoDownloadSearchKeyword.trim().toLowerCase()
+    const filteredSessions = sortedSessions.filter((session) => {
+      if (!keyword) return true
+      const displayName = String(session.displayName || '').toLowerCase()
+      const username = String(session.username || '').toLowerCase()
+      return displayName.includes(keyword) || username.includes(keyword)
+    })
+    const filteredSessionIds = filteredSessions.map((session) => session.username)
+    const selectedCount = autoDownloadSelectedIds.size
+    const selectedInFilteredCount = filteredSessionIds.filter((id) => autoDownloadSelectedIds.has(id)).length
+    const allFilteredSelected = filteredSessionIds.length > 0 && selectedInFilteredCount === filteredSessionIds.length
+    const isHooked = autoDownloadStatus?.isHooked
+
+    const persistWhitelist = (ids: Set<string>) => {
+      const whitelistArr = Array.from(ids)
+      configService.setAutoDownloadWhitelist(whitelistArr)
+      if (autoDownloadHighRes) {
+        const whitelistStr = whitelistArr.length > 0 ? (whitelistArr.join('\0') + '\0\0') : '';
+        (window as any).electronAPI.image.startAutoDownload(whitelistStr)
+      }
+    }
+
+    const toggleSelection = (id: string) => {
+      const next = new Set(autoDownloadSelectedIds)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      setAutoDownloadSelectedIds(next)
+      persistWhitelist(next)
+    }
+
+    const selectAllFiltered = () => {
+      const next = new Set(autoDownloadSelectedIds)
+      filteredSessionIds.forEach(id => next.add(id))
+      setAutoDownloadSelectedIds(next)
+      persistWhitelist(next)
+    }
+
+    const clearSelection = () => {
+      const next = new Set<string>()
+      setAutoDownloadSelectedIds(next)
+      persistWhitelist(next)
+    }
+
+    return (
+        <div className="tab-content anti-revoke-tab">
+          {/* 顶部 Hero 区域保持不变 */}
+          <div className="anti-revoke-hero" style={{ background: 'linear-gradient(110deg, var(--bg-primary) 0%, rgba(245, 158, 11, 0.1) 100%)', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
+            <div className="anti-revoke-hero-main">
+              <span className="updates-chip" style={{ color: '#f59e0b', background: 'rgba(245, 158, 11, 0.15)', width: 'fit-content' }}>测试功能 (Test)</span>
+              <h2 style={{ marginTop: '8px' }}>自动下载原图</h2>
+              <p>强制微信在接收图片时下载高清原图。建议仅在必要会话中开启以节省流量和空间。</p>
+            </div>
+            <div className="anti-revoke-metrics">
+              <div className={`anti-revoke-metric ${isHooked ? 'is-installed' : 'is-pending'}`}>
+                <span className="label">服务状态</span>
+                <span className="value" style={{ fontSize: '14px' }}>
+              {isHooked ? '正在监控' : autoDownloadHighRes ? '等待连接' : '未启用'}
+            </span>
+              </div>
+              <div className="anti-revoke-metric">
+                <span className="label">已选会话</span>
+                <span className="value">{selectedCount}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="anti-revoke-control-card">
+            <div className="anti-revoke-toolbar">
+              <div className="filter-search-box anti-revoke-search">
+                <Search size={14} />
+                <input
+                    type="text"
+                    placeholder="搜索联系人或群聊..."
+                    value={autoDownloadSearchKeyword}
+                    onChange={(e) => setAutoDownloadSearchKeyword(e.target.value)}
+                />
+              </div>
+              <div className="anti-revoke-toolbar-actions">
+                <div className="anti-revoke-btn-group">
+                  <button className="btn btn-secondary btn-sm" onClick={selectAllFiltered} disabled={filteredSessionIds.length === 0 || allFilteredSelected}>
+                    全选
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={clearSelection} disabled={selectedCount === 0}>
+                    清空选择
+                  </button>
+                </div>
+                <div className="anti-revoke-btn-group" style={{ marginLeft: '12px', paddingLeft: '12px', borderLeft: '1px solid var(--border-color)' }}>
+                  <label className="switch switch-md">
+                    <input
+                        type="checkbox"
+                        checked={autoDownloadHighRes}
+                        onChange={() => handleToggleAutoDownload(Array.from(autoDownloadSelectedIds))}
+                    />
+                    <span className="switch-slider" />
+                  </label>
+                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginLeft: '8px' }}>
+                {autoDownloadHighRes ? '服务已开启' : '服务已关闭'}
+              </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="anti-revoke-batch-actions">
+              <div className="anti-revoke-selected-count">
+                <span>已选 <strong>{selectedCount}</strong> 个目标会话</span>
+                <span style={{ opacity: 0.6 }}>（若不选则默认对所有聊天生效）</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="anti-revoke-list">
+            <div className="anti-revoke-list-header">
+              <span>会话（{filteredSessions.length}）</span>
+              <span>状态</span>
+            </div>
+            {filteredSessions.length === 0 ? (
+                <div className="anti-revoke-empty">{autoDownloadSearchKeyword ? '没有匹配的会话' : '暂无会话'}</div>
+            ) : (
+                filteredSessions.map((session) => {
+                  const isSelected = autoDownloadSelectedIds.has(session.username)
+                  return (
+                      <div key={session.username} className={`anti-revoke-row ${isSelected ? 'selected' : ''}`}>
+                        <label className="anti-revoke-row-main">
+                  <span className="anti-revoke-check">
+                    <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelection(session.username)}
+                    />
+                    <span className="check-indicator" aria-hidden="true">
+                      <Check size={12} />
+                    </span>
+                  </span>
+                          <Avatar src={session.avatarUrl} name={session.displayName} size={30} />
+                          <div className="anti-revoke-row-text">
+                            <span className="name">{session.displayName || session.username}</span>
+                          </div>
+                        </label>
+                        <div className="anti-revoke-row-status">
+                  <span className={`status-badge ${isSelected ? 'installed' : 'not-installed'}`}>
+                    <i className="status-dot" aria-hidden="true" />
+                    {isSelected ? '已监控' : '未开启'}
+                  </span>
+                        </div>
+                      </div>
+                  )
+                })
+            )}
+          </div>
+
+          {/* 风险提示部分保持不变 */}
+          <div className="api-warning-modal" style={{ width: '100%', border: '1px solid rgba(239, 68, 68, 0.2)', marginTop: '16px', background: 'rgba(239, 68, 68, 0.02)', animation: 'none', boxShadow: 'none', position: 'static' }}>
+            <div className="modal-header" style={{ border: 'none', padding: '12px 20px 0' }}>
+              <Lock size={16} color="#ef4444" />
+              <h3 style={{ fontSize: '13px', color: '#ef4444' }}>风险警告</h3>
+            </div>
+            <div className="modal-body" style={{ fontSize: '12px', color: 'var(--text-secondary)', padding: '8px 20px 12px' }}>
+              此功能通过内存 Hook 修改微信行为，具有一定的风险。请尽量仅在白名单模式下针对必要会话开启。
+            </div>
+          </div>
+        </div>
+    )
+  }
+
+
+  const handleToggleAutoDownload = async (whitelist?: string[] | string) => {
+    const newVal = !autoDownloadHighRes
+    setAutoDownloadHighRes(newVal)
+
+    try {
+      if (newVal) {
+        let currentWhitelist: string[] | string = whitelist || Array.from(autoDownloadSelectedIds)
+        if (Array.isArray(currentWhitelist)) {
+          currentWhitelist = currentWhitelist.length > 0 ? (currentWhitelist.join('\0') + '\0\0') : ''
+        }
+        const result = await (window as any).electronAPI.image.startAutoDownload(currentWhitelist)
+        if (result && !result.success) {
+          // 如果底层明确返回了失败
+          throw new Error(result.error || '启动自动下载服务失败')
+        }
+        showMessage('自动下载已开启，正在尝试连接微信', true)
+        await fetchAutoDownloadStatus()
+      } else {
+        await (window as any).electronAPI.image.stopAutoDownload()
+        showMessage('自动下载已关闭', true)
+        setAutoDownloadStatus(null)
+      }
+      await configService.setAutoDownloadHighRes(newVal)
+    } catch (e: any) {
+      // 发生错误时，将开关拨回去
+      setAutoDownloadHighRes(!newVal)
+      showMessage(`操作失败: ${e.message || String(e)}`, false)
+    }
+  }
+
   const renderUpdatesTab = () => {
     const downloadPercent = Math.max(0, Math.min(100, Number(downloadProgress?.percent || 0)))
     const channelCards: { id: configService.UpdateChannel; title: string; desc: string }[] = [
@@ -4792,7 +5031,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
         <div className="settings-layout">
           <div className="settings-tabs" role="tablist" aria-label="设置项">
-            {tabs.flatMap((tab) => {
+            {filteredTabs.flatMap((tab) => {
               const row: React.ReactNode[] = [
                 <button
                   key={tab.id}
@@ -4850,6 +5089,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             {activeTab === 'aiCommon' && renderAiCommonTab()}
             {activeTab === 'insight' && renderInsightTab()}
             {activeTab === 'aiFootprint' && renderAiFootprintTab()}
+            {activeTab === 'autoDownload' && renderAutoDownloadTab()}
             {activeTab === 'updates' && renderUpdatesTab()}
             {activeTab === 'analytics' && renderAnalyticsTab()}
             {activeTab === 'security' && renderSecurityTab()}

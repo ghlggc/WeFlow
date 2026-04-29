@@ -350,6 +350,8 @@ jobs:
             updpkgsums: true
             assets: |
               resources/installer/linux/weflow.desktop
+              resources/installer/linux/icon.png
+              resources/installer/linux/.gitignore
 
             ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
             commit_username: H3CoF6

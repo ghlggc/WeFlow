@@ -365,13 +365,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }) => callback(payload)
       ipcRenderer.on('image:decryptProgress', listener)
       return () => ipcRenderer.removeListener('image:decryptProgress', listener)
-    }
+    },
+    startAutoDownload: (whitelist: string[] | string) => ipcRenderer.invoke('image:startAutoDownload', whitelist),
+    stopAutoDownload: () => ipcRenderer.invoke('image:stopAutoDownload'),
+    getAutoDownloadStatus: () => ipcRenderer.invoke('image:getAutoDownloadStatus')
   },
 
   // 视频
   video: {
     getVideoInfo: (videoMd5: string, options?: { includePoster?: boolean; posterFormat?: 'dataUrl' | 'fileUrl' }) => ipcRenderer.invoke('video:getVideoInfo', videoMd5, options),
     parseVideoMd5: (content: string) => ipcRenderer.invoke('video:parseVideoMd5', content)
+  },
+
+  process: {
+    platform: process.platform,
+    arch: process.arch
   },
 
   // 数据分析
